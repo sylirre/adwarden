@@ -1,21 +1,32 @@
 //! Adwarden native core — the JNI surface loaded by the Android app as
 //! `libadwarden_core.so`.
 //!
-//! Phase 0 skeleton: exposes only an ABI tag so the Gradle/cargo wiring can be
-//! validated end to end. The datapath (TUN forwarding, DNS sinkhole, filter
-//! engine, pcap tap) lands with P1-A..E.
+//! In this milestone the core runs in monitor parity: it takes ownership of the
+//! TUN fd, decodes packets on a dedicated thread, and batches events back to
+//! Kotlin over the `NativeBridge` upcall. Forwarding (smoltcp), the DNS
+//! sinkhole, the filter engine, the per-app firewall, and the pcap tap build on
+//! this scaffold in P1-A..E.
 
-use jni::objects::JClass;
-use jni::sys::jint;
-use jni::JNIEnv;
+mod bridge;
+mod config;
+mod event;
+mod ffi;
+mod runtime;
 
-/// Bumped whenever the Kotlin<->Rust FFI contract changes shape.
-pub const ABI_VERSION: i32 = 1;
+pub use ffi::ABI_VERSION;
 
-#[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jint {
-    ABI_VERSION
+/// Initialize Android logcat logging. Called once from `nativeAbiVersion` guard
+/// paths in later commits; kept here so both `cfg` branches compile.
+#[cfg(target_os = "android")]
+pub fn init_logging() {
+    use android_logger::Config;
+    use log::LevelFilter;
+    android_logger::init_once(
+        Config::default()
+            .with_max_level(LevelFilter::Info)
+            .with_tag("AdwardenCore"),
+    );
 }
+
+#[cfg(not(target_os = "android"))]
+pub fn init_logging() {}

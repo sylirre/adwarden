@@ -11,22 +11,22 @@ import androidx.core.app.NotificationCompat
 import com.adwarden.AdwardenApp
 import com.adwarden.MainActivity
 import com.adwarden.R
-import com.adwarden.core.PacketDecoder
+import com.adwarden.core.NativeBridge
+import com.adwarden.core.NativeCore
 import com.adwarden.data.CaptureRepository
 import dagger.hilt.android.AndroidEntryPoint
-import java.io.FileInputStream
-import java.io.IOException
+import org.json.JSONArray
+import org.json.JSONObject
 import javax.inject.Inject
 
 /**
- * P0 loopback VPN. It establishes a TUN device, captures every IP packet the
- * system routes into it and decodes headers for the live log / dashboard.
+ * Loopback VPN. Establishes a TUN device and hands its file descriptor to the
+ * Rust native core, which decodes, filters and forwards traffic on its own
+ * thread.
  *
- * P0 runs in **monitor mode**: packets are inspected but not yet forwarded, so
- * while it is active the tunnelled traffic is dropped. Transparent forwarding
- * (userspace TCP/IP + protected upstream sockets) arrives with the native core
- * in P1/P2. The service is structured so that seam is a single call site in the
- * capture loop.
+ * In this milestone the core runs in monitor parity — it decodes packets into
+ * the live log but still drops them (no forwarding yet). Transparent forwarding
+ * arrives with P1-A at the seam inside the native runtime.
  */
 @AndroidEntryPoint
 class AdwardenVpnService : VpnService() {
@@ -34,8 +34,7 @@ class AdwardenVpnService : VpnService() {
     @Inject lateinit var capture: CaptureRepository
 
     @Volatile private var running = false
-    private var tunnel: ParcelFileDescriptor? = null
-    private var worker: Thread? = null
+    private var nativeHandle: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -56,19 +55,35 @@ class AdwardenVpnService : VpnService() {
         // Keep the foreground promise first: the caller used startForegroundService().
         startForegroundCompat()
 
+        if (!NativeCore.ensureLoaded()) {
+            Log.e("Adwarden", "Native core failed to load")
+            stopEverything()
+            stopSelf()
+            return
+        }
+
         val fd = establishTunnel()
         if (fd == null) {
             stopEverything()
             stopSelf()
             return
         }
-        tunnel = fd
+
+        // Ownership of the descriptor transfers to the native core, which closes
+        // it on nativeStop. We must not touch it after detachFd().
+        val rawFd = fd.detachFd()
+        val bridge = NativeBridge(capture)
+        val handle = NativeCore.nativeStart(rawFd, buildConfigJson(), bridge)
+        if (handle == 0L) {
+            Log.e("Adwarden", "Native core failed to start")
+            stopEverything()
+            stopSelf()
+            return
+        }
+
+        nativeHandle = handle
         running = true
         capture.onStarted()
-        worker = Thread({ captureLoop(fd) }, "adw-capture").apply {
-            isDaemon = true
-            start()
-        }
     }
 
     private fun establishTunnel(): ParcelFileDescriptor? {
@@ -92,25 +107,11 @@ class AdwardenVpnService : VpnService() {
         }
     }
 
-    private fun captureLoop(fd: ParcelFileDescriptor) {
-        val input = FileInputStream(fd.fileDescriptor)
-        val packet = ByteArray(MTU + 64)
-        try {
-            while (running) {
-                val n = input.read(packet)
-                if (n < 0) break
-                if (n == 0) continue
-                val decoded = PacketDecoder.decode(packet, n)
-                capture.onPacket(decoded, n)
-                // P1/P2 forwarding seam: here the native core reinjects the packet
-                // upstream via a protect()ed socket. In P0 monitor mode it is dropped.
-            }
-        } catch (_: IOException) {
-            // Expected when the descriptor is closed on stop.
-        } finally {
-            runCatching { input.close() }
-        }
-    }
+    private fun buildConfigJson(): String = JSONObject().apply {
+        put("mtu", MTU)
+        put("block_encrypted_dns", false)
+        put("dns_servers", JSONArray(listOf("1.1.1.1", "2606:4700:4700::1111")))
+    }.toString()
 
     private fun startForegroundCompat() {
         val open = PendingIntent.getActivity(
@@ -138,10 +139,10 @@ class AdwardenVpnService : VpnService() {
 
     private fun stopEverything() {
         running = false
-        runCatching { tunnel?.close() }
-        tunnel = null
-        worker?.interrupt()
-        worker = null
+        if (nativeHandle != 0L) {
+            NativeCore.nativeStop(nativeHandle)
+            nativeHandle = 0L
+        }
         capture.onStopped()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)

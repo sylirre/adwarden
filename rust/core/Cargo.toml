@@ -13,6 +13,8 @@ jni.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+mio.workspace = true
+libc.workspace = true
 adwarden-netstack = { path = "../netstack" }
 adwarden-dns = { path = "../dns" }
 adwarden-filter = { path = "../filter" }

@@ -3,6 +3,7 @@ package com.adwarden.data
 import com.adwarden.core.CaptureStats
 import com.adwarden.core.ConnectionEvent
 import com.adwarden.core.L4Proto
+import com.adwarden.core.Verdict
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,8 +11,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Bridge between the capture producer (the VPN worker / native core) and the
- * Compose UI. Publishes are throttled so a busy tunnel cannot flood
+ * Bridge between the capture producer (the native core, via NativeBridge) and
+ * the Compose UI. Publishes are throttled so a busy tunnel cannot flood
  * recomposition.
  *
  * This is the injectable successor to the former `CaptureState` global object;
@@ -28,6 +29,7 @@ class CaptureRepository @Inject constructor() {
     private var tcp = 0L
     private var udp = 0L
     private var dns = 0L
+    private var blocked = 0L
     private var startedAt = 0L
     private var isRunning = false
     private var lastPublish = 0L
@@ -45,7 +47,7 @@ class CaptureRepository @Inject constructor() {
 
     fun onStarted() {
         synchronized(lock) {
-            packets = 0; bytes = 0; tcp = 0; udp = 0; dns = 0; seq = 0
+            packets = 0; bytes = 0; tcp = 0; udp = 0; dns = 0; blocked = 0; seq = 0
             dests.clear(); recent.clear()
             startedAt = System.currentTimeMillis()
             isRunning = true
@@ -60,19 +62,25 @@ class CaptureRepository @Inject constructor() {
         publish(force = true)
     }
 
-    fun onPacket(parsed: ConnectionEvent?, size: Int) {
+    /**
+     * Ingest a batch of events decoded from a native upcall. Native-assigned
+     * timestamps are kept; only the display id is (re)assigned here.
+     */
+    fun onEvents(batch: List<ConnectionEvent>) {
+        if (batch.isEmpty()) return
         synchronized(lock) {
-            packets++
-            bytes += size
-            if (parsed != null) {
-                when (parsed.proto) {
+            for (event in batch) {
+                packets++
+                bytes += event.length
+                when (event.proto) {
                     L4Proto.TCP -> tcp++
                     L4Proto.UDP -> udp++
                     else -> {}
                 }
-                if (parsed.isDns) dns++
-                if (dests.size < 8000) dests.add(parsed.dstIp)
-                recent.addFirst(parsed.copy(id = ++seq, timestampMs = System.currentTimeMillis()))
+                if (event.isDns) dns++
+                if (event.verdict == Verdict.BLOCK) blocked++
+                if (dests.size < 8000) dests.add(event.dstIp)
+                recent.addFirst(event.copy(id = ++seq))
                 while (recent.size > MAX_EVENTS) recent.removeLast()
             }
         }
@@ -93,6 +101,7 @@ class CaptureRepository @Inject constructor() {
                 udpPackets = udp,
                 dnsQueries = dns,
                 distinctDestinations = dests.size,
+                blockedQueries = blocked,
             )
             _events.value = recent.toList()
         }

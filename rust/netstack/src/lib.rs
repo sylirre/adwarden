@@ -1,4 +1,11 @@
-//! Userspace TCP/IP datapath: smoltcp-backed TCP proxying and a hand-rolled
-//! UDP NAT, relayed through `VpnService.protect()`ed upstream sockets.
+//! Userspace TCP/IP datapath support: packet decoding and the per-flow table.
 //!
-//! Phase 0 skeleton — the stack lands with P1-A.
+//! The smoltcp-backed TCP proxy and hand-rolled UDP NAT (the actual forwarding
+//! stack) land with P1-A; this crate currently provides the pieces the JNI core
+//! uses for monitor-mode capture and will grow the stack driver next.
+
+pub mod flow_table;
+pub mod packet;
+
+pub use flow_table::{FlowKey, FlowTable};
+pub use packet::{decode, Decoded, L4};

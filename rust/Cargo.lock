@@ -47,7 +47,9 @@ dependencies = [
  "adwarden-pcap",
  "android_logger",
  "jni",
+ "libc",
  "log",
+ "mio",
  "serde",
  "serde_json",
 ]

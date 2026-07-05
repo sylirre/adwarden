@@ -1,11 +1,12 @@
 package com.adwarden.core
 
-import java.net.InetAddress
-
 /** Layer-4 protocol carried by a captured IP packet. */
 enum class L4Proto { TCP, UDP, ICMP, OTHER }
 
-/** A single decoded packet surfaced to the live traffic log. */
+/** What the datapath did with a flow. */
+enum class Verdict { ALLOW, BLOCK }
+
+/** A single decoded packet/flow surfaced to the live traffic log. */
 data class ConnectionEvent(
     val id: Long,
     val timestampMs: Long,
@@ -16,6 +17,9 @@ data class ConnectionEvent(
     val dstIp: String,
     val dstPort: Int,
     val length: Int,
+    val uid: Int? = null,
+    val verdict: Verdict = Verdict.ALLOW,
+    val blockedDomain: String? = null,
 ) {
     val isDns: Boolean get() = proto == L4Proto.UDP && (dstPort == 53 || dstPort == 5353)
 }
@@ -30,74 +34,5 @@ data class CaptureStats(
     val udpPackets: Long = 0L,
     val dnsQueries: Long = 0L,
     val distinctDestinations: Int = 0,
+    val blockedQueries: Long = 0L,
 )
-
-/**
- * Stateless best-effort decoder for IPv4/IPv6 packets read off the TUN device.
- * Extension headers and fragmentation are not reassembled in P0 — that is the
- * job of the userspace TCP/IP core (smoltcp) arriving in P1/P2.
- */
-object PacketDecoder {
-
-    fun decode(buf: ByteArray, len: Int): ConnectionEvent? {
-        if (len < 20) return null
-        return when (buf[0].toInt() and 0xF0 ushr 4) {
-            4 -> decodeV4(buf, len)
-            6 -> decodeV6(buf, len)
-            else -> null
-        }
-    }
-
-    private fun decodeV4(buf: ByteArray, len: Int): ConnectionEvent? {
-        val ihl = (buf[0].toInt() and 0x0F) * 4
-        if (ihl < 20 || ihl > len) return null
-        val totalLen = u16(buf, 2)
-        val proto = protoOf(buf[9].toInt() and 0xFF)
-        val src = v4(buf, 12)
-        val dst = v4(buf, 16)
-        var sp = 0
-        var dp = 0
-        if ((proto == L4Proto.TCP || proto == L4Proto.UDP) && len >= ihl + 4) {
-            sp = u16(buf, ihl)
-            dp = u16(buf, ihl + 2)
-        }
-        return event(4, proto, src, sp, dst, dp, if (totalLen in 1..len) totalLen else len)
-    }
-
-    private fun decodeV6(buf: ByteArray, len: Int): ConnectionEvent? {
-        if (len < 40) return null
-        val payloadLen = u16(buf, 4)
-        val proto = protoOf(buf[6].toInt() and 0xFF)
-        val src = v6(buf, 8)
-        val dst = v6(buf, 24)
-        var sp = 0
-        var dp = 0
-        if ((proto == L4Proto.TCP || proto == L4Proto.UDP) && len >= 44) {
-            sp = u16(buf, 40)
-            dp = u16(buf, 42)
-        }
-        val total = 40 + payloadLen
-        return event(6, proto, src, sp, dst, dp, if (total in 1..len) total else len)
-    }
-
-    private fun protoOf(n: Int): L4Proto = when (n) {
-        6 -> L4Proto.TCP
-        17 -> L4Proto.UDP
-        1, 58 -> L4Proto.ICMP
-        else -> L4Proto.OTHER
-    }
-
-    private fun event(v: Int, p: L4Proto, s: String, sp: Int, d: String, dp: Int, size: Int) =
-        ConnectionEvent(0L, 0L, v, p, s, sp, d, dp, size)
-
-    private fun u16(b: ByteArray, o: Int) = ((b[o].toInt() and 0xFF) shl 8) or (b[o + 1].toInt() and 0xFF)
-
-    private fun v4(b: ByteArray, o: Int) =
-        "${b[o].toInt() and 0xFF}.${b[o + 1].toInt() and 0xFF}.${b[o + 2].toInt() and 0xFF}.${b[o + 3].toInt() and 0xFF}"
-
-    private fun v6(b: ByteArray, o: Int): String = try {
-        InetAddress.getByAddress(b.copyOfRange(o, o + 16)).hostAddress ?: "::"
-    } catch (_: Exception) {
-        "::"
-    }
-}
