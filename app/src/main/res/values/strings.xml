@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Adwarden</string>
+    <string name="vpn_channel_name">Protection status</string>
+    <string name="vpn_channel_desc">Shows whether Adwarden is actively filtering and inspecting traffic.</string>
+    <string name="vpn_notification_title">Adwarden is active</string>
+    <string name="vpn_notification_text">Inspecting on-device traffic (monitor mode)</string>
+</resources>
