@@ -54,4 +54,10 @@ object NativeCore {
 
     /** Report the current network transport (0 other / 1 wifi / 2 cellular). */
     external fun nativeUpdateNetwork(handle: Long, transport: Int, metered: Boolean, roaming: Boolean)
+
+    /** Start a pcapng capture to an owned fd (ringBytes 0 = unbounded). Returns true if accepted. */
+    external fun nativeStartPcap(handle: Long, fd: Int, ringBytes: Long): Boolean
+
+    /** Stop the active capture and close its file. */
+    external fun nativeStopPcap(handle: Long)
 }

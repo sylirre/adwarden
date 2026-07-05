@@ -15,6 +15,7 @@ import com.adwarden.MainActivity
 import com.adwarden.R
 import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
+import com.adwarden.core.NativeSessionHolder
 import com.adwarden.data.AppRuleRepository
 import com.adwarden.data.CaptureRepository
 import com.adwarden.data.FilterRepository
@@ -52,6 +53,7 @@ class AdwardenVpnService : VpnService() {
     @Inject lateinit var filters: FilterRepository
     @Inject lateinit var appRules: AppRuleRepository
     @Inject lateinit var networkMonitor: NetworkStateMonitor
+    @Inject lateinit var sessionHolder: NativeSessionHolder
 
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
@@ -108,6 +110,7 @@ class AdwardenVpnService : VpnService() {
         }
 
         nativeHandle = handle
+        sessionHolder.set(handle)
         running = true
         capture.onStarted()
         startObservers()
@@ -236,6 +239,7 @@ class AdwardenVpnService : VpnService() {
         running = false
         serviceScope?.cancel()
         serviceScope = null
+        sessionHolder.clear()
         if (nativeHandle != 0L) {
             NativeCore.nativeStop(nativeHandle)
             nativeHandle = 0L

@@ -162,6 +162,44 @@ fn parse_firewall(blob: &[u8]) -> HashMap<i32, AppPolicy> {
     map
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStartPcap(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    fd: jint,
+    ring_bytes: jlong,
+) -> jboolean {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::StartPcap {
+                fd: fd as std::os::fd::RawFd,
+                ring_bytes: ring_bytes.max(0) as u64,
+            });
+            true
+        } else {
+            false
+        }
+    }));
+    match result {
+        Ok(true) => JNI_TRUE,
+        _ => JNI_FALSE,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStopPcap(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::StopPcap);
+        }
+    }));
+}
+
 /// Compile a filter engine from downloaded list files + custom rules and write
 /// the serialized cache to `out_path`. Runs off the datapath (called from the
 /// WorkManager sync worker). Returns true on success.

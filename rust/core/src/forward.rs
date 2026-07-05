@@ -8,16 +8,18 @@
 //! mio `Poll` via tokens allocated here.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
-use std::time::Instant as StdInstant;
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
 use mio::net::{TcpStream, UdpSocket};
 use mio::{Interest, Registry, Token};
 use socket2::{Domain, Socket, Type};
 
 use adwarden_filter::FilterEngine;
+use adwarden_pcap::PcapWriter;
 use adwarden_netstack::packet::L4;
 use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable, NetStack};
 
@@ -88,7 +90,10 @@ pub struct Forwarder {
     firewall: HashMap<i32, AppPolicy>,
     transport: u8,
     verdicts: FlowTable<Verdict>,
+    pcap: Option<PcapWriter<File>>,
 }
+
+const PCAP_SNAPLEN: u32 = 65_535;
 
 /// A cached per-flow firewall decision.
 #[derive(Clone, Copy)]
@@ -113,6 +118,28 @@ impl Forwarder {
             firewall: HashMap::new(),
             transport: TRANSPORT_OTHER,
             verdicts: FlowTable::new(VERDICT_CACHE_CAP),
+            pcap: None,
+        }
+    }
+
+    /// Start a pcapng capture writing to `fd` (owned henceforth). `ring_bytes` of
+    /// 0 means unbounded.
+    pub fn start_pcap(&mut self, fd: RawFd, ring_bytes: u64) {
+        let file = unsafe { File::from_raw_fd(fd) };
+        let cap = if ring_bytes > 0 { Some(ring_bytes) } else { None };
+        self.pcap = PcapWriter::new(file, PCAP_SNAPLEN, cap).ok();
+    }
+
+    /// Stop the capture and close its file.
+    pub fn stop_pcap(&mut self) {
+        self.pcap = None;
+    }
+
+    /// Write a packet to the capture, if one is active.
+    fn tap(&mut self, packet: &[u8]) {
+        if let Some(writer) = self.pcap.as_mut() {
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let _ = writer.write_packet(ts, packet);
         }
     }
 
@@ -185,7 +212,13 @@ impl Forwarder {
     }
 
     pub fn take_outbox(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.outbox)
+        let outbox = std::mem::take(&mut self.outbox);
+        if self.pcap.is_some() {
+            for packet in &outbox {
+                self.tap(packet);
+            }
+        }
+        outbox
     }
 
     /// Suggested poll timeout: the sooner of smoltcp's need and a UDP-reap tick.
@@ -201,6 +234,7 @@ impl Forwarder {
     /// A packet was read off the TUN. Route it for forwarding, emitting exactly
     /// one event describing what happened to it.
     pub fn on_tun_packet(&mut self, packet: &[u8], env: &mut jni::JNIEnv, bridge: &Bridge, batcher: &mut Batcher) {
+        self.tap(packet); // capture every inbound packet, whatever its verdict
         let Some(decoded) = adwarden_netstack::decode(packet) else { return };
         match decoded.proto {
             L4::Tcp => {

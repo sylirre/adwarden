@@ -37,6 +37,10 @@ pub enum Command {
     UpdateFirewall(HashMap<i32, AppPolicy>),
     /// Set the current network transport (0 other / 1 wifi / 2 cellular).
     SetTransport(u8),
+    /// Start a pcapng capture to an owned fd (ring_bytes 0 = unbounded).
+    StartPcap { fd: RawFd, ring_bytes: u64 },
+    /// Stop and close the active capture.
+    StopPcap,
 }
 
 pub struct Session {
@@ -170,6 +174,8 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::BlockEncryptedDns(block) => forwarder.set_block_encrypted_dns(block),
             Command::UpdateFirewall(rules) => forwarder.set_firewall(rules),
             Command::SetTransport(transport) => forwarder.set_transport(transport),
+            Command::StartPcap { fd, ring_bytes } => forwarder.start_pcap(fd, ring_bytes),
+            Command::StopPcap => forwarder.stop_pcap(),
         }
     }
 }
