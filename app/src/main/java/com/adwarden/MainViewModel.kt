@@ -1,41 +1,47 @@
 package com.adwarden
 
-import android.content.Context
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
-    @ApplicationContext context: Context,
+    private val settings: SettingsRepository,
     captureRepository: CaptureRepository,
 ) : ViewModel() {
 
-    private val prefs = context.getSharedPreferences("adwarden", 0)
+    // Read the gate values once, synchronously, at construction. This mirrors the
+    // P0 SharedPreferences.getBoolean call it replaces and avoids a flash of the
+    // onboarding screen (or the wrong theme) before the DataStore flow emits.
+    private val initial = runBlocking { settings.settings.first() }
 
-    private val _onboarded = MutableStateFlow(prefs.getBoolean(KEY_ONBOARDED, false))
-    val onboarded: StateFlow<Boolean> = _onboarded
+    val onboarded: StateFlow<Boolean> = settings.settings
+        .map { it.onboarded }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.onboarded)
+
+    val dynamicColor: StateFlow<Boolean> = settings.settings
+        .map { it.dynamicColor }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.dynamicColor)
 
     val stats = captureRepository.stats
     val events = captureRepository.events
     val running = captureRepository.running
 
-    /** Appearance preference; in-memory for P0, moves to DataStore later. */
-    var dynamicColor by mutableStateOf(false)
-
     fun completeOnboarding() {
-        prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
-        _onboarded.value = true
+        viewModelScope.launch { settings.setOnboarded(true) }
     }
 
-    private companion object {
-        const val KEY_ONBOARDED = "onboarded"
+    fun setDynamicColor(value: Boolean) {
+        viewModelScope.launch { settings.setDynamicColor(value) }
     }
 }
