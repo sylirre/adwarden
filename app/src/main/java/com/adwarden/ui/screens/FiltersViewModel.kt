@@ -29,7 +29,11 @@ class FiltersViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
 
     init {
-        viewModelScope.launch { repository.ensureSeeded() }
+        viewModelScope.launch {
+            repository.ensureSeeded()
+            // Download lists + compile the engine on first open if we have none.
+            repository.scheduleSync(expedited = !repository.hasCompiledEngine())
+        }
     }
 
     fun setEnabled(id: String, enabled: Boolean) {

@@ -6,9 +6,11 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use jni::objects::{JClass, JObject, JString};
-use jni::sys::{jint, jlong};
+use jni::objects::{JClass, JIntArray, JObject, JObjectArray, JString};
+use jni::sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
+
+use adwarden_filter::{FilterEngine, ListFormat};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
@@ -102,4 +104,74 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateConfig<'loc
             session.send(Command::BlockEncryptedDns(parsed.block_encrypted_dns));
         }
     }));
+}
+
+/// Compile a filter engine from downloaded list files + custom rules and write
+/// the serialized cache to `out_path`. Runs off the datapath (called from the
+/// WorkManager sync worker). Returns true on success.
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeCompileEngine<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    list_paths: JObjectArray<'local>,
+    formats: JIntArray<'local>,
+    custom_rules: JObjectArray<'local>,
+    out_path: JString<'local>,
+) -> jboolean {
+    let result = catch_unwind(AssertUnwindSafe(|| compile_engine(&mut env, list_paths, formats, custom_rules, out_path)));
+    match result {
+        Ok(true) => JNI_TRUE,
+        _ => JNI_FALSE,
+    }
+}
+
+fn compile_engine(
+    env: &mut JNIEnv,
+    list_paths: JObjectArray,
+    formats: JIntArray,
+    custom_rules: JObjectArray,
+    out_path: JString,
+) -> bool {
+    let out: String = match env.get_string(&out_path) {
+        Ok(s) => s.into(),
+        Err(_) => return false,
+    };
+
+    let path_count = env.get_array_length(&list_paths).unwrap_or(0);
+    let format_count = env.get_array_length(&formats).unwrap_or(0);
+    if path_count != format_count {
+        return false;
+    }
+    let mut format_codes = vec![0i32; path_count as usize];
+    if path_count > 0 && env.get_int_array_region(&formats, 0, &mut format_codes).is_err() {
+        return false;
+    }
+
+    // Read each list file into an owned String, then borrow for the engine.
+    let mut sources: Vec<(ListFormat, String)> = Vec::with_capacity(path_count as usize);
+    for i in 0..path_count {
+        let Ok(elem) = env.get_object_array_element(&list_paths, i) else { continue };
+        let path: String = match env.get_string(&JString::from(elem)) {
+            Ok(s) => s.into(),
+            Err(_) => continue,
+        };
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let format = if format_codes[i as usize] == 1 { ListFormat::Hosts } else { ListFormat::Adblock };
+            sources.push((format, text));
+        }
+    }
+
+    let custom_count = env.get_array_length(&custom_rules).unwrap_or(0);
+    let mut custom: Vec<String> = Vec::with_capacity(custom_count as usize);
+    for i in 0..custom_count {
+        let Ok(elem) = env.get_object_array_element(&custom_rules, i) else { continue };
+        if let Ok(s) = env.get_string(&JString::from(elem)) {
+            custom.push(s.into());
+        }
+    }
+
+    let borrowed: Vec<(ListFormat, &str)> =
+        sources.iter().map(|(fmt, text)| (*fmt, text.as_str())).collect();
+    let engine = FilterEngine::from_lists(&borrowed, &custom);
+    std::fs::write(&out, engine.serialize()).is_ok()
 }

@@ -36,4 +36,16 @@ object NativeCore {
 
     /** Push updated runtime config (e.g. the block-encrypted-DNS toggle) as JSON. */
     external fun nativeUpdateConfig(handle: Long, configJson: String)
+
+    /**
+     * Compile a filter engine from downloaded list files (with per-list format
+     * codes: 0 = adblock, 1 = hosts) plus custom rules, writing the serialized
+     * cache to [outPath]. Returns true on success. Safe to call off the datapath.
+     */
+    external fun nativeCompileEngine(
+        listPaths: Array<String>,
+        formats: IntArray,
+        customRules: Array<String>,
+        outPath: String,
+    ): Boolean
 }

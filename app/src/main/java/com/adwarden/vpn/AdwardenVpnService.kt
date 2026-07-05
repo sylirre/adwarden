@@ -14,6 +14,7 @@ import com.adwarden.R
 import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.FilterRepository
 import com.adwarden.data.settings.SettingsRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -43,6 +45,7 @@ class AdwardenVpnService : VpnService() {
 
     @Inject lateinit var capture: CaptureRepository
     @Inject lateinit var settings: SettingsRepository
+    @Inject lateinit var filters: FilterRepository
 
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
@@ -96,13 +99,14 @@ class AdwardenVpnService : VpnService() {
         nativeHandle = handle
         running = true
         capture.onStarted()
-        observeSettings()
+        startObservers()
     }
 
-    /** Push config changes (currently the block-encrypted-DNS toggle) to the core. */
-    private fun observeSettings() {
+    private fun startObservers() {
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         serviceScope = scope
+
+        // Push the block-encrypted-DNS toggle to the core on change.
         scope.launch {
             settings.settings
                 .map { it.blockEncryptedDns }
@@ -114,6 +118,23 @@ class AdwardenVpnService : VpnService() {
                             handle,
                             JSONObject().put("block_encrypted_dns", block).toString(),
                         )
+                    }
+                }
+        }
+
+        // Load any existing engine cache immediately, reload on recompile, and
+        // kick off a sync (download-if-missing) so blocking is available.
+        if (filters.hasCompiledEngine()) {
+            NativeCore.nativeUpdateFilter(nativeHandle, filters.engineCacheFile.absolutePath)
+        }
+        filters.scheduleSync(expedited = !filters.hasCompiledEngine())
+        scope.launch {
+            filters.engineVersion
+                .drop(1)
+                .collect {
+                    val handle = nativeHandle
+                    if (handle != 0L && filters.hasCompiledEngine()) {
+                        NativeCore.nativeUpdateFilter(handle, filters.engineCacheFile.absolutePath)
                     }
                 }
         }
