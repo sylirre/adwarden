@@ -1,0 +1,9 @@
+[package]
+name = "adwarden-pcap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+pcap-file.workspace = true
+log.workspace = true

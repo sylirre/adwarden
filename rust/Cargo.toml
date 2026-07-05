@@ -1,0 +1,52 @@
+# Adwarden native core workspace.
+#
+# Android cross-compilation requires the four std targets:
+#   rustup target add aarch64-linux-android armv7-linux-androideabi \
+#                     i686-linux-android x86_64-linux-android
+# (This machine's rustup home is /usr/local/lib/rustup — root-owned — so the
+# command needs sudo. See scripts/build-native.sh.)
+#
+# The library crates (netstack, dns, filter, pcap) build and test on the host
+# toolchain; only the `core` cdylib needs the Android targets.
+
+[workspace]
+resolver = "2"
+members = ["core", "netstack", "dns", "filter", "pcap"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smoltcp = { version = "0.13", default-features = false, features = [
+    "std",
+    "log",
+    "medium-ip",
+    "proto-ipv4",
+    "proto-ipv6",
+    "proto-ipv4-fragmentation",
+    "proto-ipv6-fragmentation",
+    "socket-tcp",
+    "socket-icmp",
+] }
+mio = { version = "1.2", features = ["os-poll", "net", "os-ext"] }
+socket2 = { version = "0.6", features = ["all"] }
+adblock = "0.12"
+# Pinned to 0.21: jni 0.22 replaced the FFI-facing `JNIEnv` with `EnvUnowned`
+# and a `with_env` upgrade dance that is sparsely documented. 0.21's `JNIEnv`
+# API is the battle-tested one every JNI reference targets.
+jni = "0.21"
+android_logger = "0.15"
+pcap-file = "2.0"
+
+# panic = "unwind" (the default) is load-bearing: every JNI entry point relies
+# on catch_unwind so a Rust panic never crosses the FFI boundary.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

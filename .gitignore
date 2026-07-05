@@ -8,3 +8,6 @@
 .externalNativeBuild
 .cxx
 /app/build
+# Native build outputs (produced by cargoBuild / scripts/build-native.sh).
+/app/src/main/jniLibs
+/rust/target

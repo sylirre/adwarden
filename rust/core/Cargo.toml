@@ -1,0 +1,22 @@
+[package]
+name = "adwarden-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "adwarden_core"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+jni.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+adwarden-netstack = { path = "../netstack" }
+adwarden-dns = { path = "../dns" }
+adwarden-filter = { path = "../filter" }
+adwarden-pcap = { path = "../pcap" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger.workspace = true
