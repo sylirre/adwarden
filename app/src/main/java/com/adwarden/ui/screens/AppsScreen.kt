@@ -19,12 +19,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.theme.BrandBlue
 import com.adwarden.ui.theme.BrandCyan
@@ -39,23 +41,12 @@ import com.adwarden.ui.theme.BrandViolet
 import com.adwarden.ui.theme.Success
 import com.adwarden.ui.theme.Warning
 
-private data class SampleApp(val name: String, val pkg: String, val tint: Color)
-
-private val sampleApps = listOf(
-    SampleApp("Chrome", "com.android.chrome", BrandBlue),
-    SampleApp("YouTube", "com.google.android.youtube", Warning),
-    SampleApp("Maps", "com.google.android.apps.maps", Success),
-    SampleApp("Gmail", "com.google.android.gm", BrandViolet),
-    SampleApp("Photos", "com.google.android.apps.photos", BrandCyan),
-    SampleApp("Play Store", "com.android.vending", Success),
-    SampleApp("Messages", "com.google.android.apps.messaging", BrandBlue),
-    SampleApp("Files", "com.google.android.documentsui", BrandViolet),
-)
+private val TINTS = listOf(BrandBlue, BrandViolet, BrandCyan, Success, Warning)
 
 @Composable
-fun AppsScreen() {
-    val wifiAllowed = remember { mutableStateMapOf<String, Boolean>() }
-    val mobileAllowed = remember { mutableStateMapOf<String, Boolean>() }
+fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
+    val apps by viewModel.apps.collectAsStateWithLifecycle()
+    val loading by viewModel.loading.collectAsStateWithLifecycle()
 
     Column(
         Modifier
@@ -69,22 +60,28 @@ fun AppsScreen() {
             modifier = Modifier.padding(top = 16.dp, bottom = 2.dp),
         )
         Text(
-            "Per-app firewall preview · enforcement lands in P1",
+            "Block an app on Wi-Fi and mobile independently. Rules persist; enforcement lands with the native core.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp),
         )
+
+        if (loading && apps.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return
+        }
+
         LazyColumn(
             Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(sampleApps, key = { it.pkg }) { app ->
+            items(apps, key = { it.app.packageName }) { policy ->
                 AppCard(
-                    app = app,
-                    wifi = wifiAllowed[app.pkg] ?: true,
-                    mobile = mobileAllowed[app.pkg] ?: true,
-                    onWifi = { wifiAllowed[app.pkg] = !(wifiAllowed[app.pkg] ?: true) },
-                    onMobile = { mobileAllowed[app.pkg] = !(mobileAllowed[app.pkg] ?: true) },
+                    policy = policy,
+                    onWifi = { viewModel.setWifi(policy, !policy.allowWifi) },
+                    onMobile = { viewModel.setCellular(policy, !policy.allowCellular) },
                 )
             }
             item { Spacer(Modifier.height(12.dp)) }
@@ -94,12 +91,15 @@ fun AppsScreen() {
 
 @Composable
 private fun AppCard(
-    app: SampleApp,
-    wifi: Boolean,
-    mobile: Boolean,
+    policy: AppPolicy,
     onWifi: () -> Unit,
     onMobile: () -> Unit,
 ) {
+    val tint = TINTS[(policy.app.packageName.hashCode() and 0x7fffffff) % TINTS.size]
+    val label = policy.app.label
+    val wifi = policy.allowWifi
+    val mobile = policy.allowCellular
+
     AdwCard(Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(14.dp),
@@ -109,13 +109,13 @@ private fun AppCard(
                 Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(13.dp))
-                    .background(app.tint.copy(alpha = 0.16f)),
+                    .background(tint.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    app.name.first().toString(),
+                    label.firstOrNull()?.uppercase() ?: "?",
                     style = MaterialTheme.typography.titleMedium,
-                    color = app.tint,
+                    color = tint,
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -124,9 +124,9 @@ private fun AppCard(
                     .weight(1f)
                     .padding(horizontal = 12.dp),
             ) {
-                Text(app.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    if (!wifi && !mobile) "Blocked everywhere" else if (!wifi) "Wi-Fi blocked" else if (!mobile) "Mobile blocked" else "Allowed",
+                    statusText(wifi, mobile),
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (!wifi || !mobile) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -136,6 +136,13 @@ private fun AppCard(
             MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, onMobile)
         }
     }
+}
+
+private fun statusText(wifi: Boolean, mobile: Boolean): String = when {
+    !wifi && !mobile -> "Blocked everywhere"
+    !wifi -> "Wi-Fi blocked"
+    !mobile -> "Mobile blocked"
+    else -> "Allowed"
 }
 
 @Composable
