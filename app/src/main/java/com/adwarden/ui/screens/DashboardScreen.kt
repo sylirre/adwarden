@@ -37,7 +37,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
-import com.adwarden.core.CaptureState
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.components.SectionTitle
 import com.adwarden.ui.components.Sparkline
@@ -68,10 +67,10 @@ fun DashboardScreen(
             pps.clear()
             return@LaunchedEffect
         }
-        var last = CaptureState.stats.value.packets
+        var last = viewModel.stats.value.packets
         while (true) {
             delay(1000)
-            val now = CaptureState.stats.value.packets
+            val now = viewModel.stats.value.packets
             pps.add((now - last).coerceAtLeast(0).toFloat())
             last = now
             while (pps.size > 40) pps.removeAt(0)

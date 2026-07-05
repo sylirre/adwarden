@@ -11,10 +11,12 @@ import androidx.core.app.NotificationCompat
 import com.adwarden.AdwardenApp
 import com.adwarden.MainActivity
 import com.adwarden.R
-import com.adwarden.core.CaptureState
 import com.adwarden.core.PacketDecoder
+import com.adwarden.data.CaptureRepository
+import dagger.hilt.android.AndroidEntryPoint
 import java.io.FileInputStream
 import java.io.IOException
+import javax.inject.Inject
 
 /**
  * P0 loopback VPN. It establishes a TUN device, captures every IP packet the
@@ -26,7 +28,10 @@ import java.io.IOException
  * in P1/P2. The service is structured so that seam is a single call site in the
  * capture loop.
  */
+@AndroidEntryPoint
 class AdwardenVpnService : VpnService() {
+
+    @Inject lateinit var capture: CaptureRepository
 
     @Volatile private var running = false
     private var tunnel: ParcelFileDescriptor? = null
@@ -59,7 +64,7 @@ class AdwardenVpnService : VpnService() {
         }
         tunnel = fd
         running = true
-        CaptureState.onStarted()
+        capture.onStarted()
         worker = Thread({ captureLoop(fd) }, "adw-capture").apply {
             isDaemon = true
             start()
@@ -96,7 +101,7 @@ class AdwardenVpnService : VpnService() {
                 if (n < 0) break
                 if (n == 0) continue
                 val decoded = PacketDecoder.decode(packet, n)
-                CaptureState.onPacket(decoded, n)
+                capture.onPacket(decoded, n)
                 // P1/P2 forwarding seam: here the native core reinjects the packet
                 // upstream via a protect()ed socket. In P0 monitor mode it is dropped.
             }
@@ -137,7 +142,7 @@ class AdwardenVpnService : VpnService() {
         tunnel = null
         worker?.interrupt()
         worker = null
-        CaptureState.onStopped()
+        capture.onStopped()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

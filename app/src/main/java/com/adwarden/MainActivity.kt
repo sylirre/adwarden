@@ -11,11 +11,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
-import com.adwarden.core.CaptureState
 import com.adwarden.ui.AdwardenRoot
 import com.adwarden.ui.theme.AdwardenTheme
 import com.adwarden.vpn.AdwardenVpnService
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
@@ -46,7 +47,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleProtection() {
-        if (CaptureState.running.value) {
+        if (viewModel.running.value) {
             stopVpn()
         } else {
             val prepare = VpnService.prepare(this)
