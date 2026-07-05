@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
@@ -91,9 +91,13 @@ pub struct Forwarder {
     transport: u8,
     verdicts: FlowTable<Verdict>,
     pcap: Option<PcapWriter<File>>,
+    dns_upstream_v4: IpAddr,
+    dns_upstream_v6: IpAddr,
 }
 
 const PCAP_SNAPLEN: u32 = 65_535;
+const DEFAULT_DNS_V4: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
+const DEFAULT_DNS_V6: Ipv6Addr = Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111);
 
 /// A cached per-flow firewall decision.
 #[derive(Clone, Copy)]
@@ -104,6 +108,7 @@ struct Verdict {
 
 impl Forwarder {
     pub fn new(config: &Config, registry: Registry) -> Self {
+        let (dns_v4, dns_v6) = parse_dns_upstreams(&config.dns_servers);
         Forwarder {
             stack: NetStack::new(config.mtu),
             registry,
@@ -119,6 +124,8 @@ impl Forwarder {
             transport: TRANSPORT_OTHER,
             verdicts: FlowTable::new(VERDICT_CACHE_CAP),
             pcap: None,
+            dns_upstream_v4: dns_v4,
+            dns_upstream_v6: dns_v6,
         }
     }
 
@@ -272,7 +279,14 @@ impl Forwarder {
                         return; // sinkholed: NXDOMAIN already injected
                     }
                     batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
-                    self.forward_udp(dgram, env, bridge);
+                    // Allowed DNS goes to the real upstream (the app targeted a
+                    // tunnel-local placeholder); everything else keeps its dst.
+                    let upstream = if is_dns {
+                        self.dns_upstream(dgram.dst)
+                    } else {
+                        dgram.dst
+                    };
+                    self.forward_udp(dgram, upstream, env, bridge);
                 } else {
                     batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                 }
@@ -460,11 +474,20 @@ impl Forwarder {
 
     // --- UDP -------------------------------------------------------------
 
-    fn forward_udp(&mut self, dgram: udp::UdpDatagram, env: &mut jni::JNIEnv, bridge: &Bridge) {
+    /// Forward a datagram to `upstream`. The NAT key and reply source stay tied
+    /// to `dgram.dst` (what the app targeted), so a DNS answer relayed from a
+    /// real resolver still appears to come from the advertised placeholder.
+    fn forward_udp(
+        &mut self,
+        dgram: udp::UdpDatagram,
+        upstream: SocketAddr,
+        env: &mut jni::JNIEnv,
+        bridge: &Bridge,
+    ) {
         let key = UdpKey { app: dgram.src, server: dgram.dst };
         let now = self.now_ms();
         if !self.udp.contains_key(&key) {
-            if let Some((socket, token)) = self.connect_udp(dgram.dst, env, bridge) {
+            if let Some((socket, token)) = self.connect_udp(upstream, env, bridge) {
                 self.routes.insert(token, Route::Udp(key));
                 self.udp.insert(
                     key,
@@ -478,6 +501,16 @@ impl Forwarder {
             session.last_used_ms = now;
             let _ = session.socket.send(&dgram.payload);
         }
+    }
+
+    /// The real resolver to forward an allowed DNS query to, matching the
+    /// query's address family and keeping its port.
+    fn dns_upstream(&self, queried: SocketAddr) -> SocketAddr {
+        let ip = match queried.ip() {
+            IpAddr::V4(_) => self.dns_upstream_v4,
+            IpAddr::V6(_) => self.dns_upstream_v6,
+        };
+        SocketAddr::new(ip, queried.port())
     }
 
     fn connect_udp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(UdpSocket, Token)> {
@@ -529,5 +562,45 @@ impl Forwarder {
                 self.routes.remove(&session.token);
             }
         }
+    }
+}
+
+/// Pick the first IPv4 and IPv6 upstream resolvers from the config, falling back
+/// to Cloudflare when unspecified or unparseable.
+fn parse_dns_upstreams(servers: &[String]) -> (IpAddr, IpAddr) {
+    let mut v4 = IpAddr::V4(DEFAULT_DNS_V4);
+    let mut v6 = IpAddr::V6(DEFAULT_DNS_V6);
+    let mut got_v4 = false;
+    let mut got_v6 = false;
+    for server in servers {
+        match server.parse::<IpAddr>() {
+            Ok(ip @ IpAddr::V4(_)) if !got_v4 => {
+                v4 = ip;
+                got_v4 = true;
+            }
+            Ok(ip @ IpAddr::V6(_)) if !got_v6 => {
+                v6 = ip;
+                got_v6 = true;
+            }
+            _ => {}
+        }
+    }
+    (v4, v6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_dns_upstreams_with_fallback() {
+        let (v4, v6) = parse_dns_upstreams(&["9.9.9.9".into(), "2620:fe::fe".into()]);
+        assert_eq!(v4, "9.9.9.9".parse::<IpAddr>().unwrap());
+        assert_eq!(v6, "2620:fe::fe".parse::<IpAddr>().unwrap());
+
+        // Empty config falls back to Cloudflare.
+        let (v4, v6) = parse_dns_upstreams(&[]);
+        assert_eq!(v4, IpAddr::V4(DEFAULT_DNS_V4));
+        assert_eq!(v6, IpAddr::V6(DEFAULT_DNS_V6));
     }
 }

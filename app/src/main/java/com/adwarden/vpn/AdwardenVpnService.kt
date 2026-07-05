@@ -188,8 +188,15 @@ class AdwardenVpnService : VpnService() {
                 .addRoute("0.0.0.0", 0)
                 .addAddress("fd00:aced:1::2", 128)
                 .addRoute("::", 0)
-                .addDnsServer("1.1.1.1")
-                .addDnsServer("2606:4700:4700::1111")
+                // Advertise tunnel-local placeholder resolvers (the gateway), NOT
+                // a real public DoH provider like 1.1.1.1 — otherwise Chrome's
+                // "Automatic" secure DNS recognizes the provider and upgrades to
+                // DoH, bypassing our filtering and breaking with
+                // DNS_PROBE_FINISHED_BAD_SECURE_CONFIG. The core intercepts these
+                // plaintext queries and forwards them to the real upstreams
+                // (config "dns_servers").
+                .addDnsServer(DNS_PLACEHOLDER_V4)
+                .addDnsServer(DNS_PLACEHOLDER_V6)
             // Never tunnel ourselves — avoids a capture feedback loop.
             runCatching { builder.addDisallowedApplication(packageName) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
@@ -207,7 +214,7 @@ class AdwardenVpnService : VpnService() {
         return JSONObject().apply {
             put("mtu", MTU)
             put("block_encrypted_dns", blockEncryptedDns)
-            put("dns_servers", JSONArray(listOf("1.1.1.1", "2606:4700:4700::1111")))
+            put("dns_servers", JSONArray(UPSTREAM_DNS))
         }.toString()
     }
 
@@ -269,5 +276,12 @@ class AdwardenVpnService : VpnService() {
         const val ACTION_STOP = "com.adwarden.vpn.action.STOP"
         private const val NOTIF_ID = 1001
         private const val MTU = 1500
+
+        // Tunnel-local placeholder resolvers advertised to apps (the gateway).
+        private const val DNS_PLACEHOLDER_V4 = "10.215.173.1"
+        private const val DNS_PLACEHOLDER_V6 = "fd00:aced:1::1"
+
+        // Real upstream resolvers the core forwards allowed DNS queries to.
+        private val UPSTREAM_DNS = listOf("1.1.1.1", "2606:4700:4700::1111")
     }
 }
