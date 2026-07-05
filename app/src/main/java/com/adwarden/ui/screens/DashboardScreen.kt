@@ -97,7 +97,7 @@ fun DashboardScreen(
 
         if (running) {
             Spacer(Modifier.height(12.dp))
-            MonitorBanner()
+            FilteringBanner()
         }
 
         Spacer(Modifier.height(20.dp))
@@ -230,7 +230,7 @@ private fun HeroCard(
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                 ) {
                     Text(
-                        if (running) "Monitor mode" else "Off",
+                        if (running) "Filtering" else "Off",
                         style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
                         color = Color.White,
                     )
@@ -279,7 +279,7 @@ private fun HeroCard(
 }
 
 @Composable
-private fun MonitorBanner() {
+private fun FilteringBanner() {
     AdwCard(Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(14.dp),
@@ -288,11 +288,11 @@ private fun MonitorBanner() {
             androidx.compose.material3.Icon(
                 Icons.Rounded.Info,
                 contentDescription = null,
-                tint = Warning,
+                tint = Success,
                 modifier = Modifier.size(20.dp),
             )
             Text(
-                "Monitor mode inspects packets without forwarding them yet — transparent forwarding arrives with the native core.",
+                "Allowed traffic is forwarded through the native core; blocked domains and apps are dropped.",
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                 color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp),

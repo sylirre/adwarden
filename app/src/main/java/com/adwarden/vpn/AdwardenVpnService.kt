@@ -72,7 +72,7 @@ class AdwardenVpnService : VpnService() {
         // Ownership of the descriptor transfers to the native core, which closes
         // it on nativeStop. We must not touch it after detachFd().
         val rawFd = fd.detachFd()
-        val bridge = NativeBridge(capture)
+        val bridge = NativeBridge(capture, protector = { socketFd -> protect(socketFd) })
         val handle = NativeCore.nativeStart(rawFd, buildConfigJson(), bridge)
         if (handle == 0L) {
             Log.e("Adwarden", "Native core failed to start")

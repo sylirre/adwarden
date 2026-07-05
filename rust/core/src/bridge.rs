@@ -6,6 +6,8 @@
 //! `lookupUid` (hot-path, so their method IDs will be cached) arrive with P1-A
 //! and P1-D.
 
+use std::os::fd::RawFd;
+
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::{JNIEnv, JavaVM};
 
@@ -30,6 +32,19 @@ impl Bridge {
     pub fn on_events(&self, env: &mut JNIEnv, batch: &[u8]) {
         let Ok(array) = env.byte_array_from_slice(batch) else { return };
         let _ = env.call_method(&self.global, "onEvents", "([B)V", &[JValue::Object(&array)]);
+        self.clear_exception(env);
+    }
+
+    /// Ask the VpnService to `protect` a socket fd so its traffic bypasses the
+    /// tunnel. Called on the datapath thread before connecting an upstream
+    /// socket; returns false on any error (caller should abandon the socket).
+    pub fn protect(&self, env: &mut JNIEnv, fd: RawFd) -> bool {
+        let result = env.call_method(&self.global, "protect", "(I)Z", &[JValue::Int(fd)]);
+        self.clear_exception(env);
+        result.and_then(|v| v.z()).unwrap_or(false)
+    }
+
+    fn clear_exception(&self, env: &mut JNIEnv) {
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_clear();
         }

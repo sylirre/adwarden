@@ -1,11 +1,15 @@
-//! Userspace TCP/IP datapath support: packet decoding and the per-flow table.
-//!
-//! The smoltcp-backed TCP proxy and hand-rolled UDP NAT (the actual forwarding
-//! stack) land with P1-A; this crate currently provides the pieces the JNI core
-//! uses for monitor-mode capture and will grow the stack driver next.
+//! Userspace TCP/IP datapath: a smoltcp-backed TCP proxy plus packet decoding
+//! and the per-flow table. UDP is handled directly by the core (hand-rolled
+//! NAT), so this crate focuses on TCP interception and the shared primitives.
 
+pub mod device;
 pub mod flow_table;
 pub mod packet;
+pub mod stack;
+pub mod udp;
 
+pub use device::TunDevice;
 pub use flow_table::{FlowKey, FlowTable};
 pub use packet::{decode, Decoded, L4};
+pub use stack::{FlowId, NetStack, PollOutcome};
+pub use udp::UdpDatagram;
