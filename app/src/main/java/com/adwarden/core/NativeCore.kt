@@ -48,4 +48,10 @@ object NativeCore {
         customRules: Array<String>,
         outPath: String,
     ): Boolean
+
+    /** Push per-app firewall rules: u32 count, then [i32 uid, u8 wifi, u8 cell] each (LE). */
+    external fun nativeUpdateFirewall(handle: Long, rulesBlob: ByteArray)
+
+    /** Report the current network transport (0 other / 1 wifi / 2 cellular). */
+    external fun nativeUpdateNetwork(handle: Long, transport: Int, metered: Boolean, roaming: Boolean)
 }

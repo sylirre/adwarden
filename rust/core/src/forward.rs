@@ -19,13 +19,28 @@ use socket2::{Domain, Socket, Type};
 
 use adwarden_filter::FilterEngine;
 use adwarden_netstack::packet::L4;
-use adwarden_netstack::{udp, Decoded, FlowId, NetStack};
+use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable, NetStack};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::event::{Batcher, Event};
 
 const DOT_PORT: u16 = 853;
+const PROTO_TCP: i32 = 6;
+const PROTO_UDP: i32 = 17;
+const VERDICT_CACHE_CAP: usize = 4096;
+
+/// Current default network transport, matching Kotlin's NetworkStateMonitor.
+pub const TRANSPORT_OTHER: u8 = 0;
+pub const TRANSPORT_WIFI: u8 = 1;
+pub const TRANSPORT_CELLULAR: u8 = 2;
+
+/// Per-app firewall policy: allowed on Wi-Fi / cellular.
+#[derive(Clone, Copy)]
+pub struct AppPolicy {
+    pub allow_wifi: bool,
+    pub allow_cellular: bool,
+}
 
 /// First token handed to an upstream socket (0/1 are reserved for TUN/waker).
 const FIRST_DYNAMIC_TOKEN: usize = 16;
@@ -70,6 +85,16 @@ pub struct Forwarder {
     start: StdInstant,
     engine: Option<FilterEngine>,
     block_encrypted_dns: bool,
+    firewall: HashMap<i32, AppPolicy>,
+    transport: u8,
+    verdicts: FlowTable<Verdict>,
+}
+
+/// A cached per-flow firewall decision.
+#[derive(Clone, Copy)]
+struct Verdict {
+    blocked: bool,
+    uid: i32,
 }
 
 impl Forwarder {
@@ -85,6 +110,9 @@ impl Forwarder {
             start: StdInstant::now(),
             engine: None,
             block_encrypted_dns: config.block_encrypted_dns,
+            firewall: HashMap::new(),
+            transport: TRANSPORT_OTHER,
+            verdicts: FlowTable::new(VERDICT_CACHE_CAP),
         }
     }
 
@@ -97,6 +125,53 @@ impl Forwarder {
 
     pub fn set_block_encrypted_dns(&mut self, block: bool) {
         self.block_encrypted_dns = block;
+    }
+
+    /// Replace the per-app firewall rules. Verdict cache is cleared so new rules
+    /// take effect on the next packet of each flow.
+    pub fn set_firewall(&mut self, rules: HashMap<i32, AppPolicy>) {
+        self.firewall = rules;
+        self.verdicts = FlowTable::new(VERDICT_CACHE_CAP);
+    }
+
+    pub fn set_transport(&mut self, transport: u8) {
+        if transport != self.transport {
+            self.transport = transport;
+            self.verdicts = FlowTable::new(VERDICT_CACHE_CAP);
+        }
+    }
+
+    /// Resolve (and cache) the firewall verdict for a flow. Unknown UIDs and
+    /// unruled apps are allowed.
+    fn verdict(&mut self, decoded: &Decoded, proto: i32, env: &mut jni::JNIEnv, bridge: &Bridge) -> Verdict {
+        let key = FlowKey::new(proto as u8, decoded.src, decoded.src_port, decoded.dst, decoded.dst_port);
+        if let Some(cached) = self.verdicts.get(&key) {
+            return *cached;
+        }
+        let uid = bridge.lookup_uid(
+            env,
+            proto,
+            std::net::SocketAddr::new(decoded.src, decoded.src_port),
+            std::net::SocketAddr::new(decoded.dst, decoded.dst_port),
+        );
+        let blocked = self.policy_blocks(uid);
+        let verdict = Verdict { blocked, uid };
+        self.verdicts.insert(key, verdict);
+        verdict
+    }
+
+    fn policy_blocks(&self, uid: i32) -> bool {
+        if uid < 0 {
+            return false; // unattributable -> allow
+        }
+        match self.firewall.get(&uid) {
+            Some(policy) => match self.transport {
+                TRANSPORT_WIFI => !policy.allow_wifi,
+                TRANSPORT_CELLULAR => !policy.allow_cellular,
+                _ => false,
+            },
+            None => false,
+        }
     }
 
     fn now_ms(&self) -> i64 {
@@ -133,7 +208,16 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded)); // DoT: drop, app connect fails
                     return;
                 }
-                batcher.push(Event::flow(&decoded));
+                let verdict = self.verdict(&decoded, PROTO_TCP, env, bridge);
+                if verdict.blocked {
+                    // RST the app so it fails fast instead of timing out.
+                    if let Some(rst) = reset_for_syn(packet) {
+                        self.outbox.push(rst);
+                    }
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return;
+                }
+                batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                 if let Some((id, server)) = self.stack.on_tcp_packet(packet) {
                     self.open_tcp(id, server, env, bridge);
                 }
@@ -143,15 +227,20 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded));
                     return;
                 }
+                let verdict = self.verdict(&decoded, PROTO_UDP, env, bridge);
+                if verdict.blocked {
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return; // firewall drop (covers this app's DNS too)
+                }
                 let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if let Some(dgram) = udp::parse(packet) {
                     if is_dns && self.handle_dns(&decoded, &dgram, batcher) {
                         return; // sinkholed: NXDOMAIN already injected
                     }
-                    batcher.push(Event::flow(&decoded));
+                    batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                     self.forward_udp(dgram, env, bridge);
                 } else {
-                    batcher.push(Event::flow(&decoded));
+                    batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                 }
             }
             _ => {

@@ -101,6 +101,12 @@ impl Event {
         Event::from_decoded(decoded, KIND_DNS_BLOCK, VERDICT_BLOCK, Some(domain))
     }
 
+    /// Attach the owning app UID (from the firewall lookup).
+    pub fn with_uid(mut self, uid: i32) -> Event {
+        self.uid = uid;
+        self
+    }
+
     fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.kind);
         out.push(self.ip_version);

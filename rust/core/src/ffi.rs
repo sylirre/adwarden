@@ -6,7 +6,9 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use jni::objects::{JClass, JIntArray, JObject, JObjectArray, JString};
+use std::collections::HashMap;
+
+use jni::objects::{JByteArray, JClass, JIntArray, JObject, JObjectArray, JString};
 use jni::sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
@@ -14,6 +16,7 @@ use adwarden_filter::{FilterEngine, ListFormat};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
+use crate::forward::AppPolicy;
 use crate::runtime::{Command, Session};
 
 /// Borrow the session behind a handle without taking ownership.
@@ -104,6 +107,59 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateConfig<'loc
             session.send(Command::BlockEncryptedDns(parsed.block_encrypted_dns));
         }
     }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFirewall<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    rules: JByteArray<'local>,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let blob = env.convert_byte_array(&rules).unwrap_or_default();
+        let parsed = parse_firewall(&blob);
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::UpdateFirewall(parsed));
+        }
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateNetwork(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    transport: jint,
+    _metered: jboolean,
+    _roaming: jboolean,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::SetTransport(transport as u8));
+        }
+    }));
+}
+
+/// Parse the firewall blob: u32 count, then per rule i32 uid + u8 wifi + u8 cell.
+fn parse_firewall(blob: &[u8]) -> HashMap<i32, AppPolicy> {
+    let mut map = HashMap::new();
+    if blob.len() < 4 {
+        return map;
+    }
+    let count = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    let mut off = 4;
+    for _ in 0..count {
+        if off + 6 > blob.len() {
+            break;
+        }
+        let uid = i32::from_le_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
+        let allow_wifi = blob[off + 4] != 0;
+        let allow_cellular = blob[off + 5] != 0;
+        map.insert(uid, AppPolicy { allow_wifi, allow_cellular });
+        off += 6;
+    }
+    map
 }
 
 /// Compile a filter engine from downloaded list files + custom rules and write

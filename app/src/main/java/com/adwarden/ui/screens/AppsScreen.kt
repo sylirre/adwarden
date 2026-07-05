@@ -60,7 +60,7 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
             modifier = Modifier.padding(top = 16.dp, bottom = 2.dp),
         )
         Text(
-            "Block an app on Wi-Fi and mobile independently. Rules persist; enforcement lands with the native core.",
+            "Block an app on Wi-Fi and mobile independently. Enforced while protection is on.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp),

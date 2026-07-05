@@ -19,9 +19,10 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::storage::RingBuffer;
 use smoltcp::time::{Duration, Instant};
+use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{
-    HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, IpProtocol, Ipv4Packet, Ipv6Packet,
-    TcpPacket,
+    HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, IpProtocol, Ipv4Packet, Ipv4Repr,
+    Ipv6Packet, Ipv6Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
 };
 
 use crate::device::TunDevice;
@@ -247,6 +248,81 @@ impl NetStack {
     }
 }
 
+/// Build a RST+ACK refusing an inbound SYN, so a firewall-blocked app fails
+/// fast instead of timing out. Returns the reply packet (server -> app).
+pub fn reset_for_syn(packet: &[u8]) -> Option<Vec<u8>> {
+    match packet.first().map(|b| b >> 4) {
+        Some(4) => {
+            let ip = Ipv4Packet::new_checked(packet).ok()?;
+            if ip.next_header() != IpProtocol::Tcp {
+                return None;
+            }
+            let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
+            if !tcp.syn() {
+                return None;
+            }
+            let rst = rst_repr(tcp.src_port(), tcp.dst_port(), tcp.seq_number());
+            let ip_repr = Ipv4Repr {
+                src_addr: ip.dst_addr(),
+                dst_addr: ip.src_addr(),
+                next_header: IpProtocol::Tcp,
+                payload_len: rst.buffer_len(),
+                hop_limit: 64,
+            };
+            let mut buf = vec![0u8; ip_repr.buffer_len() + rst.buffer_len()];
+            let mut ip_pkt = Ipv4Packet::new_unchecked(&mut buf);
+            ip_repr.emit(&mut ip_pkt, &ChecksumCapabilities::default());
+            let (s, d) = (IpAddress::Ipv4(ip.dst_addr()), IpAddress::Ipv4(ip.src_addr()));
+            let mut tcp_pkt = TcpPacket::new_unchecked(ip_pkt.payload_mut());
+            rst.emit(&mut tcp_pkt, &s, &d, &ChecksumCapabilities::default());
+            Some(buf)
+        }
+        Some(6) => {
+            let ip = Ipv6Packet::new_checked(packet).ok()?;
+            if ip.next_header() != IpProtocol::Tcp {
+                return None;
+            }
+            let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
+            if !tcp.syn() {
+                return None;
+            }
+            let rst = rst_repr(tcp.src_port(), tcp.dst_port(), tcp.seq_number());
+            let ip_repr = Ipv6Repr {
+                src_addr: ip.dst_addr(),
+                dst_addr: ip.src_addr(),
+                next_header: IpProtocol::Tcp,
+                payload_len: rst.buffer_len(),
+                hop_limit: 64,
+            };
+            let mut buf = vec![0u8; ip_repr.buffer_len() + rst.buffer_len()];
+            let mut ip_pkt = Ipv6Packet::new_unchecked(&mut buf);
+            ip_repr.emit(&mut ip_pkt);
+            let (s, d) = (IpAddress::Ipv6(ip.dst_addr()), IpAddress::Ipv6(ip.src_addr()));
+            let mut tcp_pkt = TcpPacket::new_unchecked(ip_pkt.payload_mut());
+            rst.emit(&mut tcp_pkt, &s, &d, &ChecksumCapabilities::default());
+            Some(buf)
+        }
+        _ => None,
+    }
+}
+
+fn rst_repr<'a>(app_port: u16, server_port: u16, syn_seq: TcpSeqNumber) -> TcpRepr<'a> {
+    TcpRepr {
+        src_port: server_port,
+        dst_port: app_port,
+        control: TcpControl::Rst,
+        seq_number: TcpSeqNumber(0),
+        ack_number: Some(syn_seq + 1),
+        window_len: 0,
+        window_scale: None,
+        max_seg_size: None,
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &[],
+    }
+}
+
 fn peek_tcp(packet: &[u8]) -> Option<TcpPeek> {
     match packet.first().map(|b| b >> 4) {
         Some(4) => {
@@ -387,6 +463,20 @@ mod tests {
         let ip = Ipv4Packet::new_checked(&reply).unwrap();
         assert_eq!(ip.src_addr(), SERVER);
         assert_eq!(ip.dst_addr(), APP);
+    }
+
+    #[test]
+    fn reset_for_syn_builds_rst() {
+        let syn = build(TcpControl::Syn, 42, None, &[]);
+        let rst = reset_for_syn(&syn).expect("rst built");
+        let ip = Ipv4Packet::new_checked(&rst).unwrap();
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.rst());
+        // Reversed direction: server -> app.
+        assert_eq!(ip.src_addr(), SERVER);
+        assert_eq!(ip.dst_addr(), APP);
+        assert_eq!(tcp.dst_port(), APP_PORT);
+        assert_eq!(tcp.ack_number().0, 43); // syn seq + 1
     }
 
     #[test]

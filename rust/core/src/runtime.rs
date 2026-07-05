@@ -15,10 +15,12 @@ use std::time::{Duration, Instant};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
+use std::collections::HashMap;
+
 use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::event::Batcher;
-use crate::forward::Forwarder;
+use crate::forward::{AppPolicy, Forwarder};
 
 const TUN: Token = Token(0);
 const WAKE: Token = Token(1);
@@ -31,6 +33,10 @@ pub enum Command {
     LoadEngine(String),
     /// Toggle blocking of encrypted DNS (DoT/DoH endpoints).
     BlockEncryptedDns(bool),
+    /// Replace the per-app firewall rules (uid -> policy).
+    UpdateFirewall(HashMap<i32, AppPolicy>),
+    /// Set the current network transport (0 other / 1 wifi / 2 cellular).
+    SetTransport(u8),
 }
 
 pub struct Session {
@@ -162,6 +168,8 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
         match command {
             Command::LoadEngine(path) => forwarder.load_engine(&path),
             Command::BlockEncryptedDns(block) => forwarder.set_block_encrypted_dns(block),
+            Command::UpdateFirewall(rules) => forwarder.set_firewall(rules),
+            Command::SetTransport(transport) => forwarder.set_transport(transport),
         }
     }
 }

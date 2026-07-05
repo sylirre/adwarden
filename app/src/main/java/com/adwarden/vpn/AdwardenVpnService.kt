@@ -1,8 +1,10 @@
 package com.adwarden.vpn
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -13,9 +15,11 @@ import com.adwarden.MainActivity
 import com.adwarden.R
 import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
+import com.adwarden.data.AppRuleRepository
 import com.adwarden.data.CaptureRepository
 import com.adwarden.data.FilterRepository
 import com.adwarden.data.settings.SettingsRepository
+import com.adwarden.firewall.NetworkStateMonitor
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +50,8 @@ class AdwardenVpnService : VpnService() {
     @Inject lateinit var capture: CaptureRepository
     @Inject lateinit var settings: SettingsRepository
     @Inject lateinit var filters: FilterRepository
+    @Inject lateinit var appRules: AppRuleRepository
+    @Inject lateinit var networkMonitor: NetworkStateMonitor
 
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
@@ -87,7 +93,12 @@ class AdwardenVpnService : VpnService() {
         // Ownership of the descriptor transfers to the native core, which closes
         // it on nativeStop. We must not touch it after detachFd().
         val rawFd = fd.detachFd()
-        val bridge = NativeBridge(capture, protector = { socketFd -> protect(socketFd) })
+        val connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val bridge = NativeBridge(
+            capture = capture,
+            connectivity = connectivity,
+            protector = { socketFd -> protect(socketFd) },
+        )
         val handle = NativeCore.nativeStart(rawFd, buildConfigJson(), bridge)
         if (handle == 0L) {
             Log.e("Adwarden", "Native core failed to start")
@@ -137,6 +148,31 @@ class AdwardenVpnService : VpnService() {
                         NativeCore.nativeUpdateFilter(handle, filters.engineCacheFile.absolutePath)
                     }
                 }
+        }
+
+        // Push per-app firewall rules whenever they change.
+        scope.launch {
+            appRules.rules.collect { rules ->
+                val handle = nativeHandle
+                if (handle != 0L) {
+                    NativeCore.nativeUpdateFirewall(handle, appRules.encodeBlob(rules))
+                }
+            }
+        }
+
+        // Track the active transport so per-network rules apply correctly.
+        scope.launch {
+            networkMonitor.state.collect { networkState ->
+                val handle = nativeHandle
+                if (handle != 0L) {
+                    NativeCore.nativeUpdateNetwork(
+                        handle,
+                        networkState.transport,
+                        networkState.metered,
+                        networkState.roaming,
+                    )
+                }
+            }
         }
     }
 

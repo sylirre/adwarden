@@ -6,6 +6,7 @@
 //! `lookupUid` (hot-path, so their method IDs will be cached) arrive with P1-A
 //! and P1-D.
 
+use std::net::IpAddr;
 use std::os::fd::RawFd;
 
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -44,9 +45,49 @@ impl Bridge {
         result.and_then(|v| v.z()).unwrap_or(false)
     }
 
+    /// Resolve the owning app UID of a connection via
+    /// `ConnectivityManager.getConnectionOwnerUid`. Returns -1 (INVALID_UID) on
+    /// error or when the connection isn't attributable.
+    pub fn lookup_uid(
+        &self,
+        env: &mut JNIEnv,
+        proto: i32,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+    ) -> i32 {
+        let src_bytes = ip_octets(src.ip());
+        let dst_bytes = ip_octets(dst.ip());
+        let (Ok(src_arr), Ok(dst_arr)) =
+            (env.byte_array_from_slice(&src_bytes), env.byte_array_from_slice(&dst_bytes))
+        else {
+            return -1;
+        };
+        let result = env.call_method(
+            &self.global,
+            "lookupUid",
+            "(I[BI[BI)I",
+            &[
+                JValue::Int(proto),
+                JValue::Object(&src_arr),
+                JValue::Int(src.port() as i32),
+                JValue::Object(&dst_arr),
+                JValue::Int(dst.port() as i32),
+            ],
+        );
+        self.clear_exception(env);
+        result.and_then(|v| v.i()).unwrap_or(-1)
+    }
+
     fn clear_exception(&self, env: &mut JNIEnv) {
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_clear();
         }
+    }
+}
+
+fn ip_octets(ip: IpAddr) -> Vec<u8> {
+    match ip {
+        IpAddr::V4(v4) => v4.octets().to_vec(),
+        IpAddr::V6(v6) => v6.octets().to_vec(),
     }
 }

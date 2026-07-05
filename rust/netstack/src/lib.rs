@@ -11,5 +11,5 @@ pub mod udp;
 pub use device::TunDevice;
 pub use flow_table::{FlowKey, FlowTable};
 pub use packet::{decode, Decoded, L4};
-pub use stack::{FlowId, NetStack, PollOutcome};
+pub use stack::{reset_for_syn, FlowId, NetStack, PollOutcome};
 pub use udp::UdpDatagram;
