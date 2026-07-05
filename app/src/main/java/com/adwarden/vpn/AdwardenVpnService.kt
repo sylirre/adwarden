@@ -79,18 +79,21 @@ class AdwardenVpnService : VpnService() {
         startForegroundCompat()
 
         if (!NativeCore.ensureLoaded()) {
-            Log.e("Adwarden", "Native core failed to load")
+            Log.e(TAG, "Native core .so failed to load")
             stopEverything()
             stopSelf()
             return
         }
+        Log.i(TAG, "Native core loaded (abi=${runCatching { NativeCore.nativeAbiVersion() }.getOrDefault(-1)})")
 
         val fd = establishTunnel()
         if (fd == null) {
+            Log.e(TAG, "establishTunnel returned null")
             stopEverything()
             stopSelf()
             return
         }
+        Log.i(TAG, "TUN established")
 
         // Ownership of the descriptor transfers to the native core, which closes
         // it on nativeStop. We must not touch it after detachFd().
@@ -102,8 +105,12 @@ class AdwardenVpnService : VpnService() {
             protector = { socketFd -> protect(socketFd) },
         )
         val handle = NativeCore.nativeStart(rawFd, buildConfigJson(), bridge)
+        Log.i(TAG, "nativeStart returned handle=$handle")
         if (handle == 0L) {
-            Log.e("Adwarden", "Native core failed to start")
+            Log.e(TAG, "Native core failed to start; closing leaked TUN fd $rawFd")
+            // The core did not take ownership — close the detached fd so the
+            // tunnel tears down instead of black-holing.
+            runCatching { ParcelFileDescriptor.adoptFd(rawFd).close() }
             stopEverything()
             stopSelf()
             return
@@ -114,6 +121,7 @@ class AdwardenVpnService : VpnService() {
         running = true
         capture.onStarted()
         startObservers()
+        Log.i(TAG, "Capture started")
     }
 
     private fun startObservers() {
@@ -202,7 +210,7 @@ class AdwardenVpnService : VpnService() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
             builder.establish()
         } catch (e: Exception) {
-            Log.e("Adwarden", "Failed to establish tunnel", e)
+            Log.e(TAG, "Failed to establish tunnel", e)
             null
         }
     }
@@ -274,6 +282,7 @@ class AdwardenVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.adwarden.vpn.action.START"
         const val ACTION_STOP = "com.adwarden.vpn.action.STOP"
+        private const val TAG = "Adwarden"
         private const val NOTIF_ID = 1001
         private const val MTU = 1500
 
