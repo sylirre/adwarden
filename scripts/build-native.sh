@@ -9,17 +9,21 @@
 # (e.g. to inspect symbols or size) without a full Gradle run.
 #
 # Prerequisites (one-time):
-#   1. Android std targets. This machine's rustup home (/usr/local/lib/rustup) is
-#      root-owned, so installing targets needs sudo:
+#   1. Android std targets. rustup 1.28+ auto-installs these on first
+#      `cargo build --target …`; otherwise add them explicitly:
 #
-#        sudo rustup target add aarch64-linux-android armv7-linux-androideabi \
-#                               i686-linux-android x86_64-linux-android
+#        rustup target add aarch64-linux-android armv7-linux-androideabi \
+#                          i686-linux-android x86_64-linux-android
 #
-#   2. cargo-ndk (installs into the writable ~/.cargo/bin):
+#   2. cargo-ndk (installs into ~/.cargo/bin):
 #
 #        cargo install cargo-ndk
 #
 #   3. NDK present at $ANDROID_NDK_HOME (defaults below to the SDK's NDK 28).
+#
+# Note: `./gradlew :app:assembleDebug` already does all of this via the
+# rust-android-gradle plugin; this script is only for building the native side
+# on its own (symbol inspection, size checks, CI).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
