@@ -204,6 +204,12 @@ impl Forwarder {
     /// Resolve (and cache) the firewall verdict for a flow. Unknown UIDs and
     /// unruled apps are allowed.
     fn verdict(&mut self, decoded: &Decoded, proto: i32, env: &mut jni::JNIEnv, bridge: &Bridge) -> Verdict {
+        // No per-app rules -> allow everything without the (per-flow, binder)
+        // getConnectionOwnerUid upcall. This keeps DNS/browsing off the JNI path
+        // entirely in the common case.
+        if self.firewall.is_empty() {
+            return Verdict { blocked: false, uid: -1 };
+        }
         let key = FlowKey::new(proto as u8, decoded.src, decoded.src_port, decoded.dst, decoded.dst_port);
         if let Some(cached) = self.verdicts.get(&key) {
             return *cached;
@@ -441,7 +447,7 @@ impl Forwarder {
             self.stats.protect_ok += 1;
         } else {
             self.stats.protect_fail += 1;
-            log::warn!("protect() failed for upstream TCP socket -> {}", server);
+            crate::alog!("protect() failed for upstream TCP socket -> {}", server);
             return None;
         }
         // Non-blocking connect returns EINPROGRESS; that's expected.
@@ -562,7 +568,7 @@ impl Forwarder {
             self.stats.protect_ok += 1;
         } else {
             self.stats.protect_fail += 1;
-            log::warn!("protect() failed for upstream UDP socket -> {}", server);
+            crate::alog!("protect() failed for upstream UDP socket -> {}", server);
             return None;
         }
         socket.connect(&server.into()).ok()?;

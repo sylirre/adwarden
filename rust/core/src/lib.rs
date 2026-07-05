@@ -16,8 +16,8 @@ mod runtime;
 
 pub use ffi::ABI_VERSION;
 
-/// Initialize Android logcat logging. Called once from `nativeAbiVersion` guard
-/// paths in later commits; kept here so both `cfg` branches compile.
+/// Initialize Android logcat logging via the `log` facade (best-effort — the
+/// datapath diagnostics use [`alog`] directly, which cannot silently no-op).
 #[cfg(target_os = "android")]
 pub fn init_logging() {
     use android_logger::Config;
@@ -31,3 +31,30 @@ pub fn init_logging() {
 
 #[cfg(not(target_os = "android"))]
 pub fn init_logging() {}
+
+/// Write a line straight to Android's logcat (tag `AdwardenCore`, INFO) via
+/// liblog. This bypasses the `log`/android_logger stack entirely so diagnostics
+/// are guaranteed to appear regardless of logger init or level filtering.
+#[cfg(target_os = "android")]
+pub fn alog(msg: &str) {
+    use std::ffi::CString;
+    use std::os::raw::c_char;
+    extern "C" {
+        fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+    }
+    const ANDROID_LOG_INFO: i32 = 4;
+    if let (Ok(tag), Ok(text)) = (CString::new("AdwardenCore"), CString::new(msg)) {
+        unsafe {
+            __android_log_write(ANDROID_LOG_INFO, tag.as_ptr(), text.as_ptr());
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn alog(_msg: &str) {}
+
+/// `alog` with `format!`-style arguments.
+#[macro_export]
+macro_rules! alog {
+    ($($arg:tt)*) => { $crate::alog(&format!($($arg)*)) };
+}

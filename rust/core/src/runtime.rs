@@ -69,7 +69,7 @@ impl Session {
                     run_loop(poll, bridge, tun_fd, config, thread_stop, thread_commands)
                 }));
                 if outcome.is_err() {
-                    log::error!("adw-core datapath thread panicked");
+                    crate::alog!("adw-core datapath thread panicked");
                 }
             })?;
 
@@ -115,13 +115,13 @@ fn run_loop(
     // Take ownership so the fd is closed exactly once, when this returns.
     let fd = unsafe { OwnedFd::from_raw_fd(tun_fd) };
     set_nonblocking(fd.as_raw_fd());
-    log::info!("run_loop: starting (tun_fd={}, mtu={})", tun_fd, config.mtu);
+    crate::alog!("run_loop: starting (tun_fd={}, mtu={})", tun_fd, config.mtu);
 
     // Attach this thread to the JVM permanently (daemon) and reuse the env.
     let mut env = match bridge.vm().attach_current_thread_as_daemon() {
         Ok(env) => env,
         Err(e) => {
-            log::error!("run_loop: attach_current_thread_as_daemon failed: {:?}", e);
+            crate::alog!("run_loop: attach_current_thread_as_daemon failed: {:?}", e);
             return;
         }
     };
@@ -129,7 +129,7 @@ fn run_loop(
     let registry = match poll.registry().try_clone() {
         Ok(r) => r,
         Err(e) => {
-            log::error!("run_loop: registry.try_clone failed: {:?}", e);
+            crate::alog!("run_loop: registry.try_clone failed: {:?}", e);
             return;
         }
     };
@@ -137,7 +137,7 @@ fn run_loop(
         .registry()
         .register(&mut SourceFd(&fd.as_raw_fd()), TUN, Interest::READABLE)
     {
-        log::error!("run_loop: TUN register failed: {:?}", e);
+        crate::alog!("run_loop: TUN register failed: {:?}", e);
         return;
     }
 
@@ -147,12 +147,12 @@ fn run_loop(
     let mut buf = vec![0u8; 65536];
     let mut last_flush = Instant::now();
     let mut last_heartbeat = Instant::now();
-    log::info!("run_loop: entering poll loop");
+    crate::alog!("run_loop: entering poll loop");
 
     while !stop.load(Ordering::Relaxed) {
         let timeout = forwarder.poll_timeout_ms().min(FLUSH_INTERVAL.as_millis() as u64);
         if let Err(e) = poll.poll(&mut events, Some(Duration::from_millis(timeout))) {
-            log::error!("run_loop: poll failed: {:?}", e);
+            crate::alog!("run_loop: poll failed: {:?}", e);
             break;
         }
 
@@ -179,7 +179,7 @@ fn run_loop(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             let s = forwarder.take_stats();
             let (tcp_flows, udp_flows) = forwarder.flow_counts();
-            log::info!(
+            crate::alog!(
                 "hb tun_in={} tcp_new={} udp_new={} protect_ok={} protect_fail={} connect_fail={} \
                  reply={} out={} uid_lookups={} blocked={} flows(tcp={},udp={})",
                 s.tun_in, s.tcp_new, s.udp_new, s.protect_ok, s.protect_fail, s.connect_fail,
@@ -192,7 +192,7 @@ fn run_loop(
     if let Some(blob) = batcher.drain_encoded() {
         bridge.on_events(&mut env, &blob);
     }
-    log::info!("run_loop: exiting (stop={})", stop.load(Ordering::Relaxed));
+    crate::alog!("run_loop: exiting (stop={})", stop.load(Ordering::Relaxed));
 }
 
 /// Drain queued control commands and apply them to the forwarder.
