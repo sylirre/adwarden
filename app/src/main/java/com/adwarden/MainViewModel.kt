@@ -33,6 +33,10 @@ class MainViewModel @Inject constructor(
         .map { it.dynamicColor }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.dynamicColor)
 
+    val blockEncryptedDns: StateFlow<Boolean> = settings.settings
+        .map { it.blockEncryptedDns }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.blockEncryptedDns)
+
     val stats = captureRepository.stats
     val events = captureRepository.events
     val running = captureRepository.running
@@ -43,5 +47,9 @@ class MainViewModel @Inject constructor(
 
     fun setDynamicColor(value: Boolean) {
         viewModelScope.launch { settings.setDynamicColor(value) }
+    }
+
+    fun setBlockEncryptedDns(value: Boolean) {
+        viewModelScope.launch { settings.setBlockEncryptedDns(value) }
     }
 }

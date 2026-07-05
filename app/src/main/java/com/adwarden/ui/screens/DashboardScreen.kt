@@ -15,13 +15,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.DataUsage
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -109,7 +110,12 @@ fun DashboardScreen(
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatTile(Icons.Rounded.Dns, formatCount(stats.dnsQueries), "DNS queries", BrandCyan, Modifier.weight(1f))
-            StatTile(Icons.Rounded.Public, stats.distinctDestinations.toString(), "Destinations", Warning, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Block, formatCount(stats.blockedQueries), "Blocked", Warning, Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatTile(Icons.Rounded.Public, stats.distinctDestinations.toString(), "Destinations", Success, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Shield, formatCount(stats.tcpPackets), "TCP flows", BrandViolet, Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(20.dp))

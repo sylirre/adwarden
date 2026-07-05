@@ -17,10 +17,15 @@ use mio::net::{TcpStream, UdpSocket};
 use mio::{Interest, Registry, Token};
 use socket2::{Domain, Socket, Type};
 
-use adwarden_netstack::{udp, FlowId, NetStack};
+use adwarden_filter::FilterEngine;
+use adwarden_netstack::packet::L4;
+use adwarden_netstack::{udp, Decoded, FlowId, NetStack};
 
 use crate::bridge::Bridge;
+use crate::config::Config;
 use crate::event::{Batcher, Event};
+
+const DOT_PORT: u16 = 853;
 
 /// First token handed to an upstream socket (0/1 are reserved for TUN/waker).
 const FIRST_DYNAMIC_TOKEN: usize = 16;
@@ -63,12 +68,14 @@ pub struct Forwarder {
     next_token: usize,
     outbox: Vec<Vec<u8>>,
     start: StdInstant,
+    engine: Option<FilterEngine>,
+    block_encrypted_dns: bool,
 }
 
 impl Forwarder {
-    pub fn new(mtu: usize, registry: Registry) -> Self {
+    pub fn new(config: &Config, registry: Registry) -> Self {
         Forwarder {
-            stack: NetStack::new(mtu),
+            stack: NetStack::new(config.mtu),
             registry,
             tcp: HashMap::new(),
             udp: HashMap::new(),
@@ -76,7 +83,20 @@ impl Forwarder {
             next_token: FIRST_DYNAMIC_TOKEN,
             outbox: Vec::new(),
             start: StdInstant::now(),
+            engine: None,
+            block_encrypted_dns: config.block_encrypted_dns,
         }
+    }
+
+    /// Load (or replace) the filter engine from its serialized cache file.
+    pub fn load_engine(&mut self, path: &str) {
+        if let Ok(bytes) = std::fs::read(path) {
+            self.engine = FilterEngine::from_serialized(&bytes);
+        }
+    }
+
+    pub fn set_block_encrypted_dns(&mut self, block: bool) {
+        self.block_encrypted_dns = block;
     }
 
     fn now_ms(&self) -> i64 {
@@ -103,29 +123,60 @@ impl Forwarder {
             .min(1_000)
     }
 
-    /// A packet was read off the TUN. Log it, then route it for forwarding.
+    /// A packet was read off the TUN. Route it for forwarding, emitting exactly
+    /// one event describing what happened to it.
     pub fn on_tun_packet(&mut self, packet: &[u8], env: &mut jni::JNIEnv, bridge: &Bridge, batcher: &mut Batcher) {
-        if let Some(decoded) = adwarden_netstack::decode(packet) {
-            batcher.push(Event::flow(&decoded));
-        }
-        match packet.first().map(|b| b >> 4) {
-            Some(4) | Some(6) => {}
-            _ => return,
-        }
-        let proto = l4_proto(packet);
-        match proto {
-            Some(6) => {
+        let Some(decoded) = adwarden_netstack::decode(packet) else { return };
+        match decoded.proto {
+            L4::Tcp => {
+                if self.block_encrypted_dns && decoded.dst_port == DOT_PORT {
+                    batcher.push(Event::blocked(&decoded)); // DoT: drop, app connect fails
+                    return;
+                }
+                batcher.push(Event::flow(&decoded));
                 if let Some((id, server)) = self.stack.on_tcp_packet(packet) {
                     self.open_tcp(id, server, env, bridge);
                 }
             }
-            Some(17) => {
+            L4::Udp => {
+                if self.block_encrypted_dns && decoded.dst_port == DOT_PORT {
+                    batcher.push(Event::blocked(&decoded));
+                    return;
+                }
+                let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if let Some(dgram) = udp::parse(packet) {
+                    if is_dns && self.handle_dns(&decoded, &dgram, batcher) {
+                        return; // sinkholed: NXDOMAIN already injected
+                    }
+                    batcher.push(Event::flow(&decoded));
                     self.forward_udp(dgram, env, bridge);
+                } else {
+                    batcher.push(Event::flow(&decoded));
                 }
             }
-            _ => {} // ICMP / other: dropped for now
+            _ => {
+                batcher.push(Event::flow(&decoded)); // ICMP / other: logged, dropped
+            }
         }
+    }
+
+    /// Intercept a DNS query: if the engine blocks the name, inject an NXDOMAIN
+    /// response toward the app and report a block. Returns true when sinkholed.
+    fn handle_dns(&mut self, decoded: &Decoded, dgram: &udp::UdpDatagram, batcher: &mut Batcher) -> bool {
+        let Some(query) = adwarden_dns::parse_query(&dgram.payload) else { return false };
+        let blocked = self
+            .engine
+            .as_ref()
+            .map_or(false, |engine| engine.is_blocked_domain(&query.name));
+        if !blocked {
+            return false;
+        }
+        let response = adwarden_dns::synthesize_nxdomain(&dgram.payload, &query);
+        if let Some(packet) = udp::build_reply(dgram.dst, dgram.src, &response) {
+            self.outbox.push(packet);
+        }
+        batcher.push(Event::blocked_domain(decoded, query.name));
+        true
     }
 
     /// Advance the stack and pump both directions of every flow.
@@ -355,14 +406,5 @@ impl Forwarder {
                 self.routes.remove(&session.token);
             }
         }
-    }
-}
-
-/// Extract the L4 protocol byte from a v4/v6 packet without full decoding.
-fn l4_proto(packet: &[u8]) -> Option<u8> {
-    match packet.first().map(|b| b >> 4) {
-        Some(4) if packet.len() >= 10 => Some(packet[9]),
-        Some(6) if packet.len() >= 7 => Some(packet[6]),
-        _ => None,
     }
 }

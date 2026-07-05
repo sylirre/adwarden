@@ -14,7 +14,17 @@ import com.adwarden.R
 import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.settings.SettingsRepository
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
@@ -32,9 +42,11 @@ import javax.inject.Inject
 class AdwardenVpnService : VpnService() {
 
     @Inject lateinit var capture: CaptureRepository
+    @Inject lateinit var settings: SettingsRepository
 
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
+    private var serviceScope: CoroutineScope? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -84,6 +96,27 @@ class AdwardenVpnService : VpnService() {
         nativeHandle = handle
         running = true
         capture.onStarted()
+        observeSettings()
+    }
+
+    /** Push config changes (currently the block-encrypted-DNS toggle) to the core. */
+    private fun observeSettings() {
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        serviceScope = scope
+        scope.launch {
+            settings.settings
+                .map { it.blockEncryptedDns }
+                .distinctUntilChanged()
+                .collect { block ->
+                    val handle = nativeHandle
+                    if (handle != 0L) {
+                        NativeCore.nativeUpdateConfig(
+                            handle,
+                            JSONObject().put("block_encrypted_dns", block).toString(),
+                        )
+                    }
+                }
+        }
     }
 
     private fun establishTunnel(): ParcelFileDescriptor? {
@@ -107,11 +140,16 @@ class AdwardenVpnService : VpnService() {
         }
     }
 
-    private fun buildConfigJson(): String = JSONObject().apply {
-        put("mtu", MTU)
-        put("block_encrypted_dns", false)
-        put("dns_servers", JSONArray(listOf("1.1.1.1", "2606:4700:4700::1111")))
-    }.toString()
+    private fun buildConfigJson(): String {
+        // One-time synchronous read of the current toggle at startup; live
+        // changes are pushed by observeSettings().
+        val blockEncryptedDns = runBlocking { settings.settings.first().blockEncryptedDns }
+        return JSONObject().apply {
+            put("mtu", MTU)
+            put("block_encrypted_dns", blockEncryptedDns)
+            put("dns_servers", JSONArray(listOf("1.1.1.1", "2606:4700:4700::1111")))
+        }.toString()
+    }
 
     private fun startForegroundCompat() {
         val open = PendingIntent.getActivity(
@@ -139,6 +177,8 @@ class AdwardenVpnService : VpnService() {
 
     private fun stopEverything() {
         running = false
+        serviceScope?.cancel()
+        serviceScope = null
         if (nativeHandle != 0L) {
             NativeCore.nativeStop(nativeHandle)
             nativeHandle = 0L

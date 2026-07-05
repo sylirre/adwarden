@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Verified
@@ -32,6 +33,7 @@ import com.adwarden.ui.components.ToggleRow
 @Composable
 fun SettingsScreen(viewModel: MainViewModel) {
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
+    val blockEncryptedDns by viewModel.blockEncryptedDns.collectAsStateWithLifecycle()
     Column(
         Modifier
             .fillMaxSize()
@@ -54,6 +56,25 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 onCheckedChange = viewModel::setDynamicColor,
                 leading = Icons.Rounded.DarkMode,
             )
+        }
+
+        Spacer(Modifier.height(20.dp))
+        SectionTitle("DNS filtering")
+        AdwCard(Modifier.fillMaxWidth()) {
+            Column {
+                ToggleRow(
+                    title = "Block encrypted DNS",
+                    subtitle = "Deny DoT/DoH so queries fall back to plaintext we can filter.",
+                    checked = blockEncryptedDns,
+                    onCheckedChange = viewModel::setBlockEncryptedDns,
+                    leading = Icons.Rounded.Dns,
+                )
+                InfoRow(
+                    Icons.Rounded.Info,
+                    "Limitation",
+                    "Android Private DNS and DoH over 443 can still bypass plaintext filtering; this only forces the common fallbacks.",
+                )
+            }
         }
 
         Spacer(Modifier.height(20.dp))

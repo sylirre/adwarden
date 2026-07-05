@@ -69,14 +69,12 @@ fn proto_code(l4: L4) -> u8 {
 }
 
 impl Event {
-    /// A plain monitored flow event from a decoded packet (allow verdict, UID
-    /// unknown).
-    pub fn flow(decoded: &Decoded) -> Event {
+    fn from_decoded(decoded: &Decoded, kind: u8, verdict: u8, domain: Option<String>) -> Event {
         Event {
-            kind: KIND_FLOW,
+            kind,
             ip_version: decoded.ip_version,
             proto: proto_code(decoded.proto),
-            verdict: VERDICT_ALLOW,
+            verdict,
             uid: -1,
             src_port: decoded.src_port,
             dst_port: decoded.dst_port,
@@ -84,8 +82,23 @@ impl Event {
             timestamp_ms: now_ms(),
             src: ip_bytes(decoded.src),
             dst: ip_bytes(decoded.dst),
-            domain: None,
+            domain,
         }
+    }
+
+    /// A plain forwarded flow event (allow verdict, UID unknown).
+    pub fn flow(decoded: &Decoded) -> Event {
+        Event::from_decoded(decoded, KIND_FLOW, VERDICT_ALLOW, None)
+    }
+
+    /// A blocked flow with no domain context (e.g. an encrypted-DNS drop).
+    pub fn blocked(decoded: &Decoded) -> Event {
+        Event::from_decoded(decoded, KIND_FLOW, VERDICT_BLOCK, None)
+    }
+
+    /// A DNS query blocked by the filter engine, carrying the sinkholed domain.
+    pub fn blocked_domain(decoded: &Decoded, domain: String) -> Event {
+        Event::from_decoded(decoded, KIND_DNS_BLOCK, VERDICT_BLOCK, Some(domain))
     }
 
     fn encode_into(&self, out: &mut Vec<u8>) {
