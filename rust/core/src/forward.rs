@@ -76,6 +76,21 @@ struct UdpSession {
     last_used_ms: i64,
 }
 
+/// Rolling datapath counters, logged as a heartbeat to diagnose stalls.
+#[derive(Default, Clone, Copy)]
+pub struct ForwarderStats {
+    pub tun_in: u64,
+    pub tcp_new: u64,
+    pub udp_new: u64,
+    pub protect_ok: u64,
+    pub protect_fail: u64,
+    pub connect_fail: u64,
+    pub upstream_reply: u64,
+    pub out_written: u64,
+    pub uid_lookups: u64,
+    pub blocked: u64,
+}
+
 pub struct Forwarder {
     stack: NetStack,
     registry: Registry,
@@ -93,6 +108,7 @@ pub struct Forwarder {
     pcap: Option<PcapWriter<File>>,
     dns_upstream_v4: IpAddr,
     dns_upstream_v6: IpAddr,
+    stats: ForwarderStats,
 }
 
 const PCAP_SNAPLEN: u32 = 65_535;
@@ -126,7 +142,17 @@ impl Forwarder {
             pcap: None,
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
+            stats: ForwarderStats::default(),
         }
+    }
+
+    /// Read and reset the rolling datapath counters (for the heartbeat log).
+    pub fn take_stats(&mut self) -> ForwarderStats {
+        std::mem::take(&mut self.stats)
+    }
+
+    pub fn flow_counts(&self) -> (usize, usize) {
+        (self.tcp.len(), self.udp.len())
     }
 
     /// Start a pcapng capture writing to `fd` (owned henceforth). `ring_bytes` of
@@ -182,6 +208,7 @@ impl Forwarder {
         if let Some(cached) = self.verdicts.get(&key) {
             return *cached;
         }
+        self.stats.uid_lookups += 1;
         let uid = bridge.lookup_uid(
             env,
             proto,
@@ -189,6 +216,9 @@ impl Forwarder {
             std::net::SocketAddr::new(decoded.dst, decoded.dst_port),
         );
         let blocked = self.policy_blocks(uid);
+        if blocked {
+            self.stats.blocked += 1;
+        }
         let verdict = Verdict { blocked, uid };
         self.verdicts.insert(key, verdict);
         verdict
@@ -220,6 +250,7 @@ impl Forwarder {
 
     pub fn take_outbox(&mut self) -> Vec<Vec<u8>> {
         let outbox = std::mem::take(&mut self.outbox);
+        self.stats.out_written += outbox.len() as u64;
         if self.pcap.is_some() {
             for packet in &outbox {
                 self.tap(packet);
@@ -241,6 +272,7 @@ impl Forwarder {
     /// A packet was read off the TUN. Route it for forwarding, emitting exactly
     /// one event describing what happened to it.
     pub fn on_tun_packet(&mut self, packet: &[u8], env: &mut jni::JNIEnv, bridge: &Bridge, batcher: &mut Batcher) {
+        self.stats.tun_in += 1;
         self.tap(packet); // capture every inbound packet, whatever its verdict
         let Some(decoded) = adwarden_netstack::decode(packet) else { return };
         match decoded.proto {
@@ -386,6 +418,7 @@ impl Forwarder {
     fn open_tcp(&mut self, id: FlowId, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) {
         match self.connect_tcp(server, env, bridge) {
             Some((stream, token)) => {
+                self.stats.tcp_new += 1;
                 self.routes.insert(token, Route::Tcp(id));
                 self.tcp.insert(
                     id,
@@ -394,6 +427,7 @@ impl Forwarder {
             }
             None => {
                 // Couldn't reach upstream: RST the app so it fails fast.
+                self.stats.connect_fail += 1;
                 self.stack.tcp_abort(id);
             }
         }
@@ -403,7 +437,11 @@ impl Forwarder {
         let domain = if server.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
         let socket = Socket::new(domain, Type::STREAM, None).ok()?;
         socket.set_nonblocking(true).ok()?;
-        if !bridge.protect(env, socket.as_raw_fd()) {
+        if bridge.protect(env, socket.as_raw_fd()) {
+            self.stats.protect_ok += 1;
+        } else {
+            self.stats.protect_fail += 1;
+            log::warn!("protect() failed for upstream TCP socket -> {}", server);
             return None;
         }
         // Non-blocking connect returns EINPROGRESS; that's expected.
@@ -454,6 +492,7 @@ impl Forwarder {
                     break;
                 }
                 Ok(n) => {
+                    self.stats.upstream_reply += 1;
                     self.stack.tcp_send_to_app(id, &buf[..n]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -488,12 +527,14 @@ impl Forwarder {
         let now = self.now_ms();
         if !self.udp.contains_key(&key) {
             if let Some((socket, token)) = self.connect_udp(upstream, env, bridge) {
+                self.stats.udp_new += 1;
                 self.routes.insert(token, Route::Udp(key));
                 self.udp.insert(
                     key,
                     UdpSession { socket, token, app: dgram.src, server: dgram.dst, last_used_ms: now },
                 );
             } else {
+                self.stats.connect_fail += 1;
                 return;
             }
         }
@@ -517,7 +558,11 @@ impl Forwarder {
         let domain = if server.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
         let socket = Socket::new(domain, Type::DGRAM, None).ok()?;
         socket.set_nonblocking(true).ok()?;
-        if !bridge.protect(env, socket.as_raw_fd()) {
+        if bridge.protect(env, socket.as_raw_fd()) {
+            self.stats.protect_ok += 1;
+        } else {
+            self.stats.protect_fail += 1;
+            log::warn!("protect() failed for upstream UDP socket -> {}", server);
             return None;
         }
         socket.connect(&server.into()).ok()?;
@@ -539,6 +584,7 @@ impl Forwarder {
             match session.socket.recv(&mut buf) {
                 Ok(n) => {
                     session.last_used_ms = self.start.elapsed().as_millis() as i64;
+                    self.stats.upstream_reply += 1;
                     if let Some(packet) = udp::build_reply(server, app, &buf[..n]) {
                         self.outbox.push(packet);
                     }

@@ -48,13 +48,27 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStart<'local>(
     bridge: JObject<'local>,
 ) -> jlong {
     let result = catch_unwind(AssertUnwindSafe(|| {
+        crate::init_logging();
         let config_json: String = env
             .get_string(&config)
             .map(|s| s.into())
             .unwrap_or_default();
+        log::info!("nativeStart: config={}", config_json);
         let config = Config::from_json(&config_json);
-        let bridge = Bridge::new(&mut env, &bridge).ok()?;
-        Session::start(bridge, tun_fd as std::os::fd::RawFd, config).ok()
+        let bridge = match Bridge::new(&mut env, &bridge) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("nativeStart: Bridge::new failed: {:?}", e);
+                return None;
+            }
+        };
+        match Session::start(bridge, tun_fd as std::os::fd::RawFd, config) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                log::error!("nativeStart: Session::start failed: {:?}", e);
+                None
+            }
+        }
     }));
 
     match result {
