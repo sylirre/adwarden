@@ -1,5 +1,6 @@
 package com.adwarden.data
 
+import com.adwarden.core.CoarseCounts
 import com.adwarden.core.ConnectionEvent
 import com.adwarden.core.L4Proto
 import com.adwarden.core.Verdict
@@ -96,6 +97,62 @@ class CaptureRepositoryTest {
         assertEquals(2, delta.blocked)
         assertEquals(mapOf("ads.test" to 1, "trk.test" to 1), delta.blockedDomains)
         assertEquals(mapOf(10005 to 2), delta.blockedApps)
+    }
+
+    private fun coarseEvent(
+        packets: Long,
+        bytes: Long,
+        tcp: Long,
+        udp: Long,
+        dns: Long,
+    ) = ConnectionEvent(
+        id = 0,
+        timestampMs = 1,
+        ipVersion = 0,
+        proto = L4Proto.OTHER,
+        srcIp = "",
+        srcPort = 0,
+        dstIp = "",
+        dstPort = 0,
+        length = 0,
+        coarse = CoarseCounts(packets, bytes, tcp, udp, dns),
+    )
+
+    @Test
+    fun foldsCoarseAggregateIntoSessionStats() {
+        val repo = CaptureRepository()
+        repo.onStarted()
+        Thread.sleep(PUBLISH_WAIT_MS) // let the publish throttle window elapse
+        repo.onEvents(listOf(coarseEvent(packets = 1200, bytes = 4_500_000, tcp = 700, udp = 500, dns = 320)))
+
+        val stats = repo.stats.value
+        assertEquals(1200, stats.packets)
+        assertEquals(4_500_000, stats.bytes)
+        assertEquals(700, stats.tcpPackets)
+        assertEquals(500, stats.udpPackets)
+        assertEquals(320, stats.dnsQueries)
+        // A coarse aggregate is not a flow: it never adds a destination or a block.
+        assertEquals(0, stats.distinctDestinations)
+        assertEquals(0, stats.blockedQueries)
+    }
+
+    @Test
+    fun coarseAggregateFlowsIntoStatsDelta() = runTest {
+        val repo = CaptureRepository()
+        repo.onStarted()
+        val deferred = async(start = CoroutineStart.UNDISPATCHED) {
+            repo.deltas.first()
+        }
+        repo.onEvents(listOf(coarseEvent(packets = 10, bytes = 2048, tcp = 6, udp = 4, dns = 2)))
+
+        val delta = deferred.await()
+        assertEquals(10, delta.packets)
+        assertEquals(2048, delta.bytes)
+        assertEquals(6, delta.tcpPackets)
+        assertEquals(2, delta.dnsQueries)
+        assertEquals(0, delta.blocked)
+        assertEquals(emptyMap<String, Int>(), delta.blockedDomains)
+        assertEquals(emptyMap<Int, Int>(), delta.blockedApps)
     }
 
     @Test

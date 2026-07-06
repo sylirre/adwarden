@@ -62,6 +62,14 @@ object NativeCore {
     /** Report the current network transport (0 other / 1 wifi / 2 cellular). */
     external fun nativeUpdateNetwork(handle: Long, transport: Int, metered: Boolean, roaming: Boolean)
 
+    /**
+     * Tell the core whether the live traffic log / a capture is open (P3-4). When
+     * closed and no app is engaged, the datapath coalesces allowed-flow telemetry
+     * into coarse aggregates and relaxes its wakeup cadence to save battery;
+     * enforcement (DNS/firewall) is unaffected. Cheap and idempotent.
+     */
+    external fun nativeSetLogOpen(handle: Long, open: Boolean)
+
     /** Start a pcapng capture to an owned fd (ringBytes 0 = unbounded). Returns true if accepted. */
     external fun nativeStartPcap(handle: Long, fd: Int, ringBytes: Long): Boolean
 

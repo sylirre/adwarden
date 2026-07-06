@@ -2,6 +2,7 @@ package com.adwarden.capture
 
 import android.content.Context
 import android.net.Uri
+import com.adwarden.core.LiveLogState
 import com.adwarden.core.NativeCore
 import com.adwarden.core.NativeSessionHolder
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +20,7 @@ import javax.inject.Singleton
 class PcapSessionManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val sessionHolder: NativeSessionHolder,
+    private val liveLog: LiveLogState,
 ) {
     private val _capturing = MutableStateFlow(false)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
@@ -39,6 +41,9 @@ class PcapSessionManager @Inject constructor(
         val fd = pfd.detachFd()
         val ok = NativeCore.nativeStartPcap(handle, fd, ringBytes)
         _capturing.value = ok
+        // A running capture needs full-fidelity events even if the Traffic screen
+        // is backgrounded, so it holds the live-log signal open (P3-4).
+        liveLog.setCapturing(ok)
         return ok
     }
 
@@ -46,10 +51,12 @@ class PcapSessionManager @Inject constructor(
         val handle = sessionHolder.handle
         if (handle != 0L) NativeCore.nativeStopPcap(handle)
         _capturing.value = false
+        liveLog.setCapturing(false)
     }
 
     /** Called when protection stops so the UI reflects that capture ended. */
     fun onSessionEnded() {
         _capturing.value = false
+        liveLog.setCapturing(false)
     }
 }

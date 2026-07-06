@@ -143,6 +143,51 @@ class NativeEventCodecTest {
     }
 
     @Test
+    fun decodesCoarseAggregateEvent() {
+        // Counters packed into the address fields, matching Event::coarse in
+        // rust/core/src/event.rs: src = packets|tcp|udp|dns (u32 each), dst = bytes (u64).
+        val src = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(1200) // packets
+            putInt(700) // tcp
+            putInt(500) // udp
+            putInt(320) // dns
+        }.array()
+        val dst = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putLong(4_500_000L) // bytes
+        }.array()
+
+        val payload = 4 + (4 + 4 + 4 + 4 + 8 + 16 + 16 + 2)
+        val buf = ByteBuffer.allocate(payload).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(1)
+        buildEvent(
+            buf,
+            kind = 3, // coarse aggregate
+            ipVersion = 0,
+            proto = 3, // OTHER (unused)
+            verdict = 0,
+            uid = -1,
+            srcPort = 0,
+            dstPort = 0,
+            length = 0,
+            timestampMs = 5150L,
+            src = src,
+            dst = dst,
+            domain = null,
+        )
+
+        val e = NativeEventCodec.decode(buf.array()).single()
+        val c = e.coarse
+        assertEquals(1200L, c!!.packets)
+        assertEquals(4_500_000L, c.bytes)
+        assertEquals(700L, c.tcpPackets)
+        assertEquals(500L, c.udpPackets)
+        assertEquals(320L, c.dnsQueries)
+        // A coarse record is a counter carrier, not a flow: no domain, not pinned.
+        assertNull(e.blockedDomain)
+        assertEquals(false, e.tlsPinned)
+    }
+
+    @Test
     fun emptyBatchDecodesToEmptyList() {
         assertTrue(NativeEventCodec.decode(ByteArray(0)).isEmpty())
         val buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)

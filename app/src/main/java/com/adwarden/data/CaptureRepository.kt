@@ -110,6 +110,17 @@ class CaptureRepository @Inject constructor() {
         val dApps = HashMap<Int, Int>()
         synchronized(lock) {
             for (event in batch) {
+                // A coalesced aggregate (P3-4): fold its counters straight in — it
+                // isn't a single flow, so it never touches recent/dests/blocked.
+                val c = event.coarse
+                if (c != null) {
+                    packets += c.packets; dPackets += c.packets
+                    bytes += c.bytes; dBytes += c.bytes
+                    tcp += c.tcpPackets; dTcp += c.tcpPackets
+                    udp += c.udpPackets
+                    dns += c.dnsQueries; dDns += c.dnsQueries
+                    continue
+                }
                 packets++; dPackets++
                 bytes += event.length; dBytes += event.length
                 when (event.proto) {

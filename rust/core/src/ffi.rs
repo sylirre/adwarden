@@ -31,7 +31,9 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 /// Bumped whenever the Kotlin<->Rust FFI contract changes shape.
 /// v2: added `nativeGenerateCa` for TLS interception (P2).
 /// v3: added `nativeExportHar` for HAR 1.2 export of decrypted flows (P2-3).
-pub const ABI_VERSION: i32 = 3;
+/// v4: added `nativeSetLogOpen` + the coarse aggregate event (KIND_COARSE) for
+///     the enforcement-safe battery fast-path (P3-4).
+pub const ABI_VERSION: i32 = 4;
 
 #[no_mangle]
 pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
@@ -179,6 +181,23 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateNetwork(
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Some(session) = unsafe { session(handle) } {
             session.send(Command::SetTransport(transport as u8));
+        }
+    }));
+}
+
+/// Set whether the live traffic log / a capture is open (P3-4). When closed and
+/// no app is engaged, the datapath coalesces allowed-flow telemetry and relaxes
+/// its wakeup cadence; enforcement is unaffected. Cheap, idempotent, live.
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeSetLogOpen(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    open: jboolean,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::SetLogOpen(open != JNI_FALSE));
         }
     }));
 }

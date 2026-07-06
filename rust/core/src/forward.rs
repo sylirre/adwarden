@@ -105,6 +105,18 @@ struct UdpSession {
     last_used_ms: i64,
 }
 
+/// Allowed-flow telemetry coalesced over one flush window while the live log is
+/// closed and no app is engaged (P3-4). Drained into a single [`Event::coarse`]
+/// per flush instead of one [`Event::flow`] per packet.
+#[derive(Default, Clone, Copy)]
+struct CoarseAccum {
+    packets: u64,
+    bytes: u64,
+    tcp: u64,
+    udp: u64,
+    dns: u64,
+}
+
 /// Rolling datapath counters, logged as a heartbeat to diagnose stalls.
 #[derive(Default, Clone, Copy)]
 pub struct ForwarderStats {
@@ -147,6 +159,12 @@ pub struct Forwarder {
     /// flows to these relay raw instead of re-breaking the app (P2-4).
     pinned: HashSet<(i32, IpAddr)>,
     stats: ForwarderStats,
+    /// Whether the live log / a capture is open (P3-4). Gates the fast-path:
+    /// while false, allowed flows of non-engaged apps are coalesced into coarse
+    /// aggregates instead of per-flow events. Enforcement is unaffected.
+    log_open: bool,
+    /// Coarse allowed-flow telemetry accumulated this flush window (P3-4).
+    coarse: CoarseAccum,
 }
 
 const PCAP_SNAPLEN: u32 = 65_535;
@@ -184,6 +202,8 @@ impl Forwarder {
             har: Vec::new(),
             pinned: HashSet::new(),
             stats: ForwarderStats::default(),
+            log_open: config.log_open,
+            coarse: CoarseAccum::default(),
         }
     }
 
@@ -257,6 +277,53 @@ impl Forwarder {
             self.transport = transport;
             self.verdicts = FlowTable::new(VERDICT_CACHE_CAP);
         }
+    }
+
+    /// Toggle the live-log-open flag (P3-4). Flipping it on takes effect on the
+    /// next packet; the datapath thread's flush/heartbeat cadence ramps back to
+    /// full immediately (the command that carries this also wakes the poll).
+    pub fn set_log_open(&mut self, open: bool) {
+        self.log_open = open;
+    }
+
+    /// Whether an allowed flow owned by `uid` should be coalesced into the coarse
+    /// aggregate rather than surfaced as its own event (P3-4). True only when the
+    /// live log is closed AND the app isn't engaged (has no non-default rule).
+    /// Enforcement (verdict/DNS/RST) is decided elsewhere and never gated by this.
+    fn coarse_mode(&self, uid: i32) -> bool {
+        !self.log_open && !self.firewall.contains_key(&uid)
+    }
+
+    /// Whether telemetry should run at full cadence: the log is open, or at least
+    /// one app is engaged (so per-flow events are being produced and watched).
+    /// When false the datapath relaxes its flush/heartbeat timers (P3-4).
+    pub fn telemetry_hot(&self) -> bool {
+        self.log_open || !self.firewall.is_empty()
+    }
+
+    /// Fold one coalesced allowed packet into the coarse window.
+    fn coarse_add(&mut self, len: u32, proto: L4, is_dns: bool) {
+        self.coarse.packets += 1;
+        self.coarse.bytes += len as u64;
+        match proto {
+            L4::Tcp => self.coarse.tcp += 1,
+            L4::Udp => self.coarse.udp += 1,
+            _ => {}
+        }
+        if is_dns {
+            self.coarse.dns += 1;
+        }
+    }
+
+    /// Take the accumulated coarse window as a single event, or `None` if empty.
+    /// Called by the datapath loop just before each batch flush (P3-4).
+    pub fn take_coarse(&mut self) -> Option<Event> {
+        if self.coarse.packets == 0 {
+            return None;
+        }
+        let c = std::mem::take(&mut self.coarse);
+        let cap = |v: u64| v.min(u32::MAX as u64) as u32;
+        Some(Event::coarse(cap(c.packets), c.bytes, cap(c.tcp), cap(c.udp), cap(c.dns)))
     }
 
     /// Resolve (and cache) the firewall verdict for a flow. Unknown UIDs and
@@ -371,7 +438,11 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
-                batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
+                if self.coarse_mode(verdict.uid) {
+                    self.coarse_add(decoded.length, L4::Tcp, false);
+                } else {
+                    batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
+                }
                 if let Some((id, server)) = self.stack.on_tcp_packet(packet) {
                     self.open_tcp(id, server, verdict.uid, env, bridge);
                 }
@@ -391,7 +462,11 @@ impl Forwarder {
                     if is_dns && self.handle_dns(&decoded, &dgram, batcher) {
                         return; // sinkholed: NXDOMAIN already injected
                     }
-                    batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
+                    if self.coarse_mode(verdict.uid) {
+                        self.coarse_add(decoded.length, L4::Udp, is_dns);
+                    } else {
+                        batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
+                    }
                     // Allowed DNS goes to the real upstream (the app targeted a
                     // tunnel-local placeholder); everything else keeps its dst.
                     let upstream = if is_dns {
@@ -400,12 +475,20 @@ impl Forwarder {
                         dgram.dst
                     };
                     self.forward_udp(dgram, upstream, env, bridge);
+                } else if self.coarse_mode(verdict.uid) {
+                    self.coarse_add(decoded.length, L4::Udp, is_dns);
                 } else {
                     batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                 }
             }
             _ => {
-                batcher.push(Event::flow(&decoded)); // ICMP / other: logged, dropped
+                // ICMP / other: logged, dropped. No uid attribution, so it's
+                // coalesced whenever the log is closed (coarse_mode(-1)).
+                if self.coarse_mode(-1) {
+                    self.coarse_add(decoded.length, decoded.proto, false);
+                } else {
+                    batcher.push(Event::flow(&decoded));
+                }
             }
         }
     }

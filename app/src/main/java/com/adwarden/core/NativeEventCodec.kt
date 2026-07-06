@@ -44,6 +44,32 @@ object NativeEventCodec {
                 null
             }
 
+            if (kind == KIND_COARSE) {
+                // Aggregate counters packed into the address fields (see
+                // Event::coarse in rust/core/src/event.rs). Not a real flow.
+                out.add(
+                    ConnectionEvent(
+                        id = 0L,
+                        timestampMs = timestampMs,
+                        ipVersion = ipVersion,
+                        proto = proto,
+                        srcIp = "",
+                        srcPort = 0,
+                        dstIp = "",
+                        dstPort = 0,
+                        length = 0,
+                        coarse = CoarseCounts(
+                            packets = u32le(src, 0),
+                            bytes = u64le(dst, 0),
+                            tcpPackets = u32le(src, 4),
+                            udpPackets = u32le(src, 8),
+                            dnsQueries = u32le(src, 12),
+                        ),
+                    ),
+                )
+                return@repeat
+            }
+
             out.add(
                 ConnectionEvent(
                     id = 0L,
@@ -64,6 +90,20 @@ object NativeEventCodec {
             )
         }
         return out
+    }
+
+    /** Little-endian u32 read from [b] at [off], widened to a non-negative Long. */
+    private fun u32le(b: ByteArray, off: Int): Long =
+        (b[off].toLong() and 0xFF) or
+            ((b[off + 1].toLong() and 0xFF) shl 8) or
+            ((b[off + 2].toLong() and 0xFF) shl 16) or
+            ((b[off + 3].toLong() and 0xFF) shl 24)
+
+    /** Little-endian u64 read from [b] at [off]. */
+    private fun u64le(b: ByteArray, off: Int): Long {
+        var v = 0L
+        for (i in 0 until 8) v = v or ((b[off + i].toLong() and 0xFF) shl (8 * i))
+        return v
     }
 
     private fun protoOf(code: Int): L4Proto = when (code) {
@@ -89,4 +129,5 @@ object NativeEventCodec {
     // Event kinds — must match rust/core/src/event.rs.
     private const val KIND_DNS_BLOCK = 1
     private const val KIND_TLS_PINNED = 2
+    private const val KIND_COARSE = 3
 }

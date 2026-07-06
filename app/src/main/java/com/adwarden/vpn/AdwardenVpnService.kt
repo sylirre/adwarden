@@ -19,6 +19,8 @@ import androidx.core.app.NotificationCompat
 import com.adwarden.AdwardenApp
 import com.adwarden.MainActivity
 import com.adwarden.R
+import com.adwarden.capture.PcapSessionManager
+import com.adwarden.core.LiveLogState
 import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
 import com.adwarden.core.NativeSessionHolder
@@ -72,6 +74,9 @@ class AdwardenVpnService : VpnService() {
     @Inject lateinit var ca: CaRepository
     @Inject lateinit var networkMonitor: NetworkStateMonitor
     @Inject lateinit var sessionHolder: NativeSessionHolder
+    @Inject lateinit var liveLog: LiveLogState
+    // Injected so protection-stop can clear a dangling capture latch (P3-4).
+    @Inject lateinit var pcap: PcapSessionManager
 
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
@@ -291,6 +296,9 @@ class AdwardenVpnService : VpnService() {
         NativeCore.nativeUpdateFirewall(handle, appRules.encodeBlob(appRules.rules.first()))
         val net = networkMonitor.state.first()
         NativeCore.nativeUpdateNetwork(handle, net.transport, net.metered, net.roaming)
+        // The log-open observer only fires on change; re-push the current value so
+        // a re-established session starts in the correct telemetry mode (P3-4).
+        NativeCore.nativeSetLogOpen(handle, liveLog.open.value)
     }
 
     private fun activeUnderlayHasGlobalV6(): Boolean {
@@ -380,6 +388,18 @@ class AdwardenVpnService : VpnService() {
                         networkState.roaming,
                     )
                 }
+            }
+        }
+
+        // Drive the datapath's battery fast-path: when the live log / a capture
+        // isn't open, the core coalesces telemetry and relaxes its wakeups (P3-4).
+        // A StateFlow replays its current value to this fresh collector, so the
+        // core learns the state right after start too.
+        scope.launch {
+            // A StateFlow already conflates equal values, so no distinctUntilChanged.
+            liveLog.open.collect { open ->
+                val handle = nativeHandle
+                if (handle != 0L) NativeCore.nativeSetLogOpen(handle, open)
             }
         }
     }
@@ -514,6 +534,9 @@ class AdwardenVpnService : VpnService() {
             nativeHandle = 0L
         }
         capture.onStopped()
+        // The core is gone; drop any capture latch so a stale one can't keep the
+        // next session out of the fast-path (P3-4).
+        pcap.onSessionEnded()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

@@ -27,6 +27,13 @@ const WAKE: Token = Token(1);
 const FLUSH_INTERVAL: Duration = Duration::from_millis(150);
 const MAX_BATCH: usize = 256;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+/// Relaxed cadence used when telemetry is "cold" — the live log is closed and no
+/// app is engaged (P3-4). The poll then blocks up to a full second instead of
+/// waking ~7×/s just to check the flush timer, and the heartbeat log quiets down.
+/// A control command (e.g. the log opening) wakes the poll immediately, so the
+/// ramp back to full cadence is not delayed by these intervals.
+const FLUSH_INTERVAL_IDLE: Duration = Duration::from_millis(1000);
+const HEARTBEAT_INTERVAL_IDLE: Duration = Duration::from_secs(15);
 
 /// A runtime control message applied on the datapath thread between polls.
 pub enum Command {
@@ -44,6 +51,9 @@ pub enum Command {
     StopPcap,
     /// Write the decrypted HTTP transactions as HAR 1.2 to an owned fd (P2-3).
     ExportHar { fd: RawFd },
+    /// Set whether the live traffic log / a capture is open (P3-4). Drives the
+    /// coalescing fast-path and the datapath's wakeup cadence.
+    SetLogOpen(bool),
 }
 
 pub struct Session {
@@ -152,7 +162,13 @@ fn run_loop(
     crate::alog!("run_loop: entering poll loop");
 
     while !stop.load(Ordering::Relaxed) {
-        let timeout = forwarder.poll_timeout_ms().min(FLUSH_INTERVAL.as_millis() as u64);
+        // Full cadence while the log is open or an app is engaged; relaxed while
+        // idle-background so the thread wakes ~1×/s instead of ~7×/s (P3-4).
+        let hot = forwarder.telemetry_hot();
+        let flush_interval = if hot { FLUSH_INTERVAL } else { FLUSH_INTERVAL_IDLE };
+        let heartbeat_interval = if hot { HEARTBEAT_INTERVAL } else { HEARTBEAT_INTERVAL_IDLE };
+
+        let timeout = forwarder.poll_timeout_ms().min(flush_interval.as_millis() as u64);
         if let Err(e) = poll.poll(&mut events, Some(Duration::from_millis(timeout))) {
             crate::alog!("run_loop: poll failed: {:?}", e);
             break;
@@ -171,14 +187,18 @@ fn run_loop(
         forwarder.service(&mut env, &bridge, &mut batcher);
         write_outbox(&fd, &mut forwarder);
 
-        if batcher.len() >= MAX_BATCH || last_flush.elapsed() >= FLUSH_INTERVAL {
+        if batcher.len() >= MAX_BATCH || last_flush.elapsed() >= flush_interval {
+            // Fold the coalesced allowed-flow aggregate into this batch (P3-4).
+            if let Some(coarse) = forwarder.take_coarse() {
+                batcher.push(coarse);
+            }
             if let Some(blob) = batcher.drain_encoded() {
                 bridge.on_events(&mut env, &blob);
             }
             last_flush = Instant::now();
         }
 
-        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+        if last_heartbeat.elapsed() >= heartbeat_interval {
             let s = forwarder.take_stats();
             let (tcp_flows, udp_flows) = forwarder.flow_counts();
             crate::alog!(
@@ -192,6 +212,9 @@ fn run_loop(
         }
     }
 
+    if let Some(coarse) = forwarder.take_coarse() {
+        batcher.push(coarse);
+    }
     if let Some(blob) = batcher.drain_encoded() {
         bridge.on_events(&mut env, &blob);
     }
@@ -213,6 +236,7 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::StartPcap { fd, ring_bytes } => forwarder.start_pcap(fd, ring_bytes),
             Command::StopPcap => forwarder.stop_pcap(),
             Command::ExportHar { fd } => forwarder.export_har(fd),
+            Command::SetLogOpen(open) => forwarder.set_log_open(open),
         }
     }
 }

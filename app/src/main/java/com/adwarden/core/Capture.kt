@@ -6,6 +6,20 @@ enum class L4Proto { TCP, UDP, ICMP, OTHER }
 /** What the datapath did with a flow. */
 enum class Verdict { ALLOW, BLOCK }
 
+/**
+ * A window's worth of allowed flows the datapath coalesced instead of surfacing
+ * individually, while the live log was closed and no app was engaged (P3-4).
+ * Carries only aggregate counters — no endpoint — folded straight into the
+ * running/persistent stats so the dashboard totals stay accurate off the hot path.
+ */
+data class CoarseCounts(
+    val packets: Long,
+    val bytes: Long,
+    val tcpPackets: Long,
+    val udpPackets: Long,
+    val dnsQueries: Long,
+)
+
 /** A single decoded packet/flow surfaced to the live traffic log. */
 data class ConnectionEvent(
     val id: Long,
@@ -24,6 +38,9 @@ data class ConnectionEvent(
      *  metadata is visible (P2-4). [host] carries the SNI when it was learned. */
     val tlsPinned: Boolean = false,
     val host: String? = null,
+    /** Non-null for a coalesced-aggregate record (P3-4); such an event is a
+     *  counter carrier, not a real flow, and is never shown in the live log. */
+    val coarse: CoarseCounts? = null,
 ) {
     val isDns: Boolean get() = proto == L4Proto.UDP && (dstPort == 53 || dstPort == 5353)
 }

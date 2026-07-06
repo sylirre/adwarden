@@ -15,6 +15,12 @@ pub const KIND_DNS_BLOCK: u8 = 1;
 /// An intercepted HTTPS flow whose app rejected our leaf (cert pinning): it now
 /// relays raw, so it's reported as metadata-only (P2-4). `domain` carries the SNI.
 pub const KIND_TLS_PINNED: u8 = 2;
+/// A window's worth of coalesced allowed-flow telemetry (P3-4). Emitted instead
+/// of per-flow [`KIND_FLOW`] events when the live log is closed and the flow's
+/// app isn't engaged, so an idle background tunnel makes far fewer FFI upcalls.
+/// It carries no endpoint — only aggregate counters, packed into the otherwise
+/// unused `src`/`dst` fields (see [`Event::coarse`]).
+pub const KIND_COARSE: u8 = 3;
 
 pub const PROTO_TCP: u8 = 0;
 pub const PROTO_UDP: u8 = 1;
@@ -122,6 +128,36 @@ impl Event {
             src: [0u8; 16],
             dst: ip_bytes(dst.ip()),
             domain: host,
+        }
+    }
+
+    /// A coalesced aggregate of allowed flows that were not surfaced
+    /// individually (P3-4). The record keeps the fixed wire shape; the counters
+    /// ride in the unused address fields, little-endian:
+    ///   src[0..4] = packets, src[4..8] = tcp, src[8..12] = udp,
+    ///   src[12..16] = dns, dst[0..8] = bytes.
+    /// `NativeEventCodec` unpacks the identical layout for `kind == KIND_COARSE`.
+    pub fn coarse(packets: u32, bytes: u64, tcp: u32, udp: u32, dns: u32) -> Event {
+        let mut src = [0u8; 16];
+        src[0..4].copy_from_slice(&packets.to_le_bytes());
+        src[4..8].copy_from_slice(&tcp.to_le_bytes());
+        src[8..12].copy_from_slice(&udp.to_le_bytes());
+        src[12..16].copy_from_slice(&dns.to_le_bytes());
+        let mut dst = [0u8; 16];
+        dst[0..8].copy_from_slice(&bytes.to_le_bytes());
+        Event {
+            kind: KIND_COARSE,
+            ip_version: 0,
+            proto: PROTO_OTHER,
+            verdict: VERDICT_ALLOW,
+            uid: -1,
+            src_port: 0,
+            dst_port: 0,
+            length: 0,
+            timestamp_ms: now_ms(),
+            src,
+            dst,
+            domain: None,
         }
     }
 
@@ -233,5 +269,18 @@ mod tests {
     #[test]
     fn empty_batch_is_none() {
         assert!(Batcher::new().drain_encoded().is_none());
+    }
+
+    #[test]
+    fn coarse_packs_counters_into_address_fields() {
+        let e = Event::coarse(7, 4096, 5, 2, 3);
+        assert_eq!(e.kind, KIND_COARSE);
+        // src holds packets/tcp/udp/dns as u32 LE at 0/4/8/12.
+        assert_eq!(u32::from_le_bytes(e.src[0..4].try_into().unwrap()), 7);
+        assert_eq!(u32::from_le_bytes(e.src[4..8].try_into().unwrap()), 5);
+        assert_eq!(u32::from_le_bytes(e.src[8..12].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(e.src[12..16].try_into().unwrap()), 3);
+        // dst holds bytes as u64 LE.
+        assert_eq!(u64::from_le_bytes(e.dst[0..8].try_into().unwrap()), 4096);
     }
 }

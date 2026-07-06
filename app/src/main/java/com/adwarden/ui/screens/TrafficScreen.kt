@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +37,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
 import com.adwarden.core.ConnectionEvent
@@ -58,6 +62,27 @@ fun TrafficScreen(
     val capturing by pcapViewModel.capturing.collectAsStateWithLifecycle()
     val running by pcapViewModel.running.collectAsStateWithLifecycle()
     var query by remember { mutableStateOf("") }
+
+    // While this screen is visible, the datapath keeps full per-flow telemetry;
+    // leaving it (tab switch or app backgrounded) lets the core drop into its
+    // coalescing battery fast-path (P3-4). addObserver replays the current state,
+    // so ON_START fires on entry; onDispose covers the tab-switch case where no
+    // ON_STOP is dispatched.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, pcapViewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> pcapViewModel.onScreenActive()
+                Lifecycle.Event.ON_STOP -> pcapViewModel.onScreenInactive()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            pcapViewModel.onScreenInactive()
+        }
+    }
 
     val createDocument = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream"),

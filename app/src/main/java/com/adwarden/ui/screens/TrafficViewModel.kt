@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adwarden.capture.HarExportManager
 import com.adwarden.capture.PcapSessionManager
+import com.adwarden.core.LiveLogState
 import com.adwarden.core.NativeSessionHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,10 +18,36 @@ import javax.inject.Inject
 class TrafficViewModel @Inject constructor(
     private val pcap: PcapSessionManager,
     private val har: HarExportManager,
+    private val liveLog: LiveLogState,
     sessionHolder: NativeSessionHolder,
 ) : ViewModel() {
 
     val capturing: StateFlow<Boolean> = pcap.capturing
+
+    // Holds at most one live-log screen-ref for this VM, so ON_START/ON_STOP and
+    // the disposal fallback can each fire without double-counting (P3-4).
+    private var held = false
+
+    /** The Traffic screen became visible — demand full-fidelity telemetry. */
+    fun onScreenActive() {
+        if (!held) {
+            held = true
+            liveLog.acquireScreen()
+        }
+    }
+
+    /** The Traffic screen is no longer visible (backgrounded or navigated away). */
+    fun onScreenInactive() {
+        if (held) {
+            held = false
+            liveLog.releaseScreen()
+        }
+    }
+
+    override fun onCleared() {
+        onScreenInactive()
+        super.onCleared()
+    }
 
     val running: StateFlow<Boolean> = sessionHolder.handleFlow
         .map { it != 0L }

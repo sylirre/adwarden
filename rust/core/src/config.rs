@@ -26,6 +26,12 @@ pub struct Config {
     pub ca_cert_pem: Option<String>,
     #[serde(default)]
     pub ca_key_pem: Option<String>,
+    /// Whether the live traffic log / a capture is open (P3-4). When false (and
+    /// no app is engaged) the datapath coalesces allowed-flow telemetry into
+    /// coarse aggregates and relaxes its wakeup cadence. Driven live via
+    /// [`crate::runtime::Command::SetLogOpen`]; the start value is just the seed.
+    #[serde(default)]
+    pub log_open: bool,
 }
 
 impl Default for Config {
@@ -37,6 +43,7 @@ impl Default for Config {
             intercept_tls: false,
             ca_cert_pem: None,
             ca_key_pem: None,
+            log_open: false,
         }
     }
 }
