@@ -90,8 +90,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ToggleRow(
-                    title = "Intercept HTTPS (TLS)",
-                    subtitle = "Decrypt cooperating apps with Adwarden's CA. Applies on next connection.",
+                    title = "Enable HTTPS inspection",
+                    subtitle = "Master switch. Choose which apps to inspect on the Apps tab; nothing is intercepted until you do. Install the CA first. Applies on next connection.",
                     checked = interceptTls,
                     onCheckedChange = viewModel::setInterceptTls,
                     leading = Icons.Rounded.Lock,

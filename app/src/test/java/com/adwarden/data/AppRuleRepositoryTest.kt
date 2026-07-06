@@ -17,8 +17,8 @@ class AppRuleRepositoryTest {
     fun encodesRulesLittleEndian() {
         val blob = repository.encodeBlob(
             listOf(
-                AppRule(packageName = "a", uid = 10123, allowWifi = false, allowCellular = true),
-                AppRule(packageName = "b", uid = 10456, allowWifi = true, allowCellular = false),
+                AppRule(packageName = "a", uid = 10123, allowWifi = false, allowCellular = true, inspectTls = true),
+                AppRule(packageName = "b", uid = 10456, allowWifi = true, allowCellular = false, inspectTls = false),
             ),
         )
 
@@ -28,12 +28,14 @@ class AppRuleRepositoryTest {
         assertEquals(10123, buf.int)
         assertEquals(0.toByte(), buf.get()) // wifi blocked
         assertEquals(1.toByte(), buf.get()) // cellular allowed
+        assertEquals(1.toByte(), buf.get()) // inspect on
 
         assertEquals(10456, buf.int)
         assertEquals(1.toByte(), buf.get())
         assertEquals(0.toByte(), buf.get())
+        assertEquals(0.toByte(), buf.get()) // inspect off
 
-        assertEquals(4 + 2 * 6, blob.size)
+        assertEquals(4 + 2 * 7, blob.size)
     }
 
     @Test

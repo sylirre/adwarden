@@ -20,26 +20,34 @@ class AppRuleRepository @Inject constructor(
 
     suspend fun rulesOnce(): List<AppRule> = appRuleDao.rulesOnce()
 
-    suspend fun setPolicy(packageName: String, uid: Int, allowWifi: Boolean, allowCellular: Boolean) {
-        if (allowWifi && allowCellular) {
+    suspend fun setPolicy(
+        packageName: String,
+        uid: Int,
+        allowWifi: Boolean,
+        allowCellular: Boolean,
+        inspectTls: Boolean,
+    ) {
+        // Keep a row only while the app has any non-default setting.
+        if (allowWifi && allowCellular && !inspectTls) {
             appRuleDao.deleteByPackage(packageName)
         } else {
-            appRuleDao.upsert(AppRule(packageName, uid, allowWifi, allowCellular))
+            appRuleDao.upsert(AppRule(packageName, uid, allowWifi, allowCellular, inspectTls))
         }
     }
 
     /**
      * Pack the rules into the native firewall blob: u32 count, then per rule
-     * [i32 uid, u8 allowWifi, u8 allowCellular], all little-endian. Must match
-     * `parse_firewall` in the Rust core.
+     * [i32 uid, u8 allowWifi, u8 allowCellular, u8 inspectTls], all
+     * little-endian. Must match `parse_firewall` in the Rust core.
      */
     fun encodeBlob(rules: List<AppRule>): ByteArray {
-        val buffer = ByteBuffer.allocate(4 + rules.size * 6).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.allocate(4 + rules.size * 7).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(rules.size)
         for (rule in rules) {
             buffer.putInt(rule.uid)
             buffer.put(if (rule.allowWifi) 1 else 0)
             buffer.put(if (rule.allowCellular) 1 else 0)
+            buffer.put(if (rule.inspectTls) 1 else 0)
         }
         return buffer.array()
     }

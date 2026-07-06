@@ -19,6 +19,7 @@ data class AppPolicy(
     val app: InstalledApp,
     val allowWifi: Boolean,
     val allowCellular: Boolean,
+    val inspectTls: Boolean,
 )
 
 @HiltViewModel
@@ -41,6 +42,7 @@ class AppsViewModel @Inject constructor(
                     app = app,
                     allowWifi = rule?.allowWifi ?: true,
                     allowCellular = rule?.allowCellular ?: true,
+                    inspectTls = rule?.inspectTls ?: false,
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -56,13 +58,22 @@ class AppsViewModel @Inject constructor(
 
     fun setCellular(policy: AppPolicy, allow: Boolean) = update(policy, allowCellular = allow)
 
+    fun setInspect(policy: AppPolicy, inspect: Boolean) = update(policy, inspectTls = inspect)
+
     private fun update(
         policy: AppPolicy,
         allowWifi: Boolean = policy.allowWifi,
         allowCellular: Boolean = policy.allowCellular,
+        inspectTls: Boolean = policy.inspectTls,
     ) {
         viewModelScope.launch {
-            appRules.setPolicy(policy.app.packageName, policy.app.uid, allowWifi, allowCellular)
+            appRules.setPolicy(
+                policy.app.packageName,
+                policy.app.uid,
+                allowWifi,
+                allowCellular,
+                inspectTls,
+            )
         }
     }
 }

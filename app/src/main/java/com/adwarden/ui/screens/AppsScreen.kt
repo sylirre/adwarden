@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,7 +61,8 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
             modifier = Modifier.padding(top = 16.dp, bottom = 2.dp),
         )
         Text(
-            "Block an app on Wi-Fi and mobile independently. Enforced while protection is on.",
+            "Block an app on Wi-Fi and mobile independently, or opt it into HTTPS inspection " +
+                "(lock). Enforced while protection is on.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp),
@@ -82,6 +84,7 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
                     policy = policy,
                     onWifi = { viewModel.setWifi(policy, !policy.allowWifi) },
                     onMobile = { viewModel.setCellular(policy, !policy.allowCellular) },
+                    onInspect = { viewModel.setInspect(policy, !policy.inspectTls) },
                 )
             }
             item { Spacer(Modifier.height(12.dp)) }
@@ -94,6 +97,7 @@ private fun AppCard(
     policy: AppPolicy,
     onWifi: () -> Unit,
     onMobile: () -> Unit,
+    onInspect: () -> Unit,
 ) {
     val tint = TINTS[(policy.app.packageName.hashCode() and 0x7fffffff) % TINTS.size]
     val label = policy.app.label
@@ -126,7 +130,7 @@ private fun AppCard(
             ) {
                 Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    statusText(wifi, mobile),
+                    statusText(wifi, mobile) + if (policy.inspectTls) " · Inspecting HTTPS" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (!wifi || !mobile) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -134,6 +138,8 @@ private fun AppCard(
             MiniToggle(Icons.Rounded.Wifi, wifi, onWifi)
             Spacer(Modifier.size(8.dp))
             MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, onMobile)
+            Spacer(Modifier.size(8.dp))
+            MiniToggle(Icons.Rounded.Lock, policy.inspectTls, onInspect)
         }
     }
 }

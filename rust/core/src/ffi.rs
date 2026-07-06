@@ -182,7 +182,8 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateNetwork(
     }));
 }
 
-/// Parse the firewall blob: u32 count, then per rule i32 uid + u8 wifi + u8 cell.
+/// Parse the firewall blob: u32 count, then per rule i32 uid + u8 wifi + u8 cell
+/// + u8 inspect_tls (7 bytes/rule). Must match `AppRuleRepository.encodeBlob`.
 fn parse_firewall(blob: &[u8]) -> HashMap<i32, AppPolicy> {
     let mut map = HashMap::new();
     if blob.len() < 4 {
@@ -191,14 +192,15 @@ fn parse_firewall(blob: &[u8]) -> HashMap<i32, AppPolicy> {
     let count = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
     let mut off = 4;
     for _ in 0..count {
-        if off + 6 > blob.len() {
+        if off + 7 > blob.len() {
             break;
         }
         let uid = i32::from_le_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
         let allow_wifi = blob[off + 4] != 0;
         let allow_cellular = blob[off + 5] != 0;
-        map.insert(uid, AppPolicy { allow_wifi, allow_cellular });
-        off += 6;
+        let inspect_tls = blob[off + 6] != 0;
+        map.insert(uid, AppPolicy { allow_wifi, allow_cellular, inspect_tls });
+        off += 7;
     }
     map
 }

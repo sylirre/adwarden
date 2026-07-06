@@ -45,4 +45,6 @@ data class AppRule(
     val uid: Int,
     val allowWifi: Boolean = true,
     val allowCellular: Boolean = true,
+    /** Opt this app's HTTPS into TLS interception (P2). Default off. */
+    val inspectTls: Boolean = false,
 )

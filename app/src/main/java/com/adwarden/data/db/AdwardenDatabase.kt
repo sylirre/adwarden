@@ -15,7 +15,7 @@ class Converters {
 
 @Database(
     entities = [FilterSubscription::class, CustomRule::class, AppRule::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

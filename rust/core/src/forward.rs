@@ -42,11 +42,14 @@ pub const TRANSPORT_OTHER: u8 = 0;
 pub const TRANSPORT_WIFI: u8 = 1;
 pub const TRANSPORT_CELLULAR: u8 = 2;
 
-/// Per-app firewall policy: allowed on Wi-Fi / cellular.
+/// Per-app policy: allowed on Wi-Fi / cellular, and whether its HTTPS should be
+/// TLS-intercepted (P2). Interception is opt-in per app so enabling the feature
+/// never MITMs a flow the user didn't choose (and can't break, e.g., system DoH).
 #[derive(Clone, Copy)]
 pub struct AppPolicy {
     pub allow_wifi: bool,
     pub allow_cellular: bool,
+    pub inspect_tls: bool,
 }
 
 /// First token handed to an upstream socket (0/1 are reserved for TUN/waker).
@@ -261,6 +264,12 @@ impl Forwarder {
         }
     }
 
+    /// Whether the app owning `uid` opted its HTTPS into TLS interception.
+    /// Unattributable flows (uid < 0) are never intercepted.
+    fn app_inspects(&self, uid: i32) -> bool {
+        uid >= 0 && self.firewall.get(&uid).map_or(false, |p| p.inspect_tls)
+    }
+
     fn now_ms(&self) -> i64 {
         self.start.elapsed().as_millis() as i64
     }
@@ -315,7 +324,7 @@ impl Forwarder {
                 }
                 batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
                 if let Some((id, server)) = self.stack.on_tcp_packet(packet) {
-                    self.open_tcp(id, server, env, bridge);
+                    self.open_tcp(id, server, verdict.uid, env, bridge);
                 }
             }
             L4::Udp => {
@@ -483,12 +492,12 @@ impl Forwarder {
 
     // --- TCP -------------------------------------------------------------
 
-    fn open_tcp(&mut self, id: FlowId, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) {
+    fn open_tcp(&mut self, id: FlowId, server: SocketAddr, uid: i32, env: &mut jni::JNIEnv, bridge: &Bridge) {
         match self.connect_tcp(server, env, bridge) {
             Some((stream, token)) => {
                 self.stats.tcp_new += 1;
                 self.routes.insert(token, Route::Tcp(id));
-                let mitm = self.new_mitm_if_intercepting(server);
+                let mitm = self.new_mitm_if_intercepting(server, uid);
                 self.tcp.insert(
                     id,
                     TcpUpstream {
@@ -510,10 +519,11 @@ impl Forwarder {
         }
     }
 
-    /// Start a TLS interception splice for this flow if interception is on and
-    /// the destination is HTTPS. Returns `None` (raw relay) otherwise.
-    fn new_mitm_if_intercepting(&mut self, server: SocketAddr) -> Option<TlsMitm> {
-        if server.port() != HTTPS_PORT {
+    /// Start a TLS interception splice for this flow only if the feature is on,
+    /// the destination is HTTPS, and the owning app opted into inspection.
+    /// Returns `None` (raw relay) otherwise.
+    fn new_mitm_if_intercepting(&mut self, server: SocketAddr, uid: i32) -> Option<TlsMitm> {
+        if server.port() != HTTPS_PORT || !self.app_inspects(uid) {
             return None;
         }
         let splice = self.tls.as_ref()?.new_splice();
