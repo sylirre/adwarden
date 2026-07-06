@@ -79,8 +79,17 @@ cargo {
 // deliberately hung off the jniLib merge (packaging), NOT preBuild, so that
 // `compileDebugKotlin` stays runnable on a host without the Android Rust
 // targets installed.
+//
+// `outputs.upToDateWhen { false }` is load-bearing: `cargoBuild` rewrites the
+// per-ABI .so files in build/rustJniLibs on every rebuild, but the folder-merge
+// task's input snapshot does NOT reliably detect that content change, so it
+// would stay UP-TO-DATE and silently repackage a stale .so (shipping old native
+// code in the APK). Forcing it to always re-merge fixes the whole chain — the
+// downstream mergeNativeLibs/strip/package tasks still short-circuit on
+// byte-identical output, so this only costs a quick copy when nothing changed.
 tasks.matching { it.name.matches(Regex("merge.*JniLibFolders")) }.configureEach {
     dependsOn("cargoBuild")
+    outputs.upToDateWhen { false }
 }
 
 dependencies {
