@@ -58,7 +58,7 @@ fun AdwardenRoot(
 ) {
     val onboarded by viewModel.onboarded.collectAsStateWithLifecycle()
     if (!onboarded) {
-        OnboardingScreen(onGetStarted = viewModel::completeOnboarding)
+        OnboardingScreen(viewModel)
         return
     }
     MainScaffold(viewModel, onToggleProtection, widthSizeClass)

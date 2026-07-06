@@ -49,7 +49,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        maybeRequestNotifications()
+        // Permission priming now lives in the onboarding wizard (P3-6); the
+        // notification request survives here only as a fallback on the toggle path.
         // A fresh launch from the QS tile (consent needed) carries this action.
         if (savedInstanceState == null) handleTileAction(intent)
 
@@ -115,6 +116,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVpn() {
+        // Fallback priming for users who skipped the onboarding notification step:
+        // ask in-context as protection starts. A no-op once already granted.
+        maybeRequestNotifications()
         val intent = Intent(this, AdwardenVpnService::class.java)
             .setAction(AdwardenVpnService.ACTION_START)
         ContextCompat.startForegroundService(this, intent)
