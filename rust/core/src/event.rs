@@ -5,13 +5,16 @@
 //! is crossed a few times a second rather than per packet. `NativeEventCodec`
 //! on the Kotlin side decodes the identical layout.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use adwarden_netstack::{Decoded, L4};
 
 pub const KIND_FLOW: u8 = 0;
 pub const KIND_DNS_BLOCK: u8 = 1;
+/// An intercepted HTTPS flow whose app rejected our leaf (cert pinning): it now
+/// relays raw, so it's reported as metadata-only (P2-4). `domain` carries the SNI.
+pub const KIND_TLS_PINNED: u8 = 2;
 
 pub const PROTO_TCP: u8 = 0;
 pub const PROTO_UDP: u8 = 1;
@@ -99,6 +102,27 @@ impl Event {
     /// A DNS query blocked by the filter engine, carrying the sinkholed domain.
     pub fn blocked_domain(decoded: &Decoded, domain: String) -> Event {
         Event::from_decoded(decoded, KIND_DNS_BLOCK, VERDICT_BLOCK, Some(domain))
+    }
+
+    /// An HTTPS flow we couldn't decrypt because the app pinned/refused our leaf.
+    /// The flow still forwards (allow), but only its metadata is visible. `host`
+    /// is the SNI, if it was learned before the rejection. We lack the app's
+    /// local endpoint here, so `src` is left zeroed.
+    pub fn tls_pinned(uid: i32, dst: SocketAddr, host: Option<String>) -> Event {
+        Event {
+            kind: KIND_TLS_PINNED,
+            ip_version: if dst.is_ipv4() { 4 } else { 6 },
+            proto: PROTO_TCP,
+            verdict: VERDICT_ALLOW,
+            uid,
+            src_port: 0,
+            dst_port: dst.port(),
+            length: 0,
+            timestamp_ms: now_ms(),
+            src: [0u8; 16],
+            dst: ip_bytes(dst.ip()),
+            domain: host,
+        }
     }
 
     /// Attach the owning app UID (from the firewall lookup).

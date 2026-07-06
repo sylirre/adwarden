@@ -38,6 +38,14 @@ pub struct MitmIo {
     pub closed: bool,
 }
 
+/// Which side of the splice a failure came from — so we only attribute an
+/// aborted *app* handshake to leaf rejection, not an upstream/config problem.
+enum FailSide {
+    App,
+    Upstream,
+    Other,
+}
+
 /// A live TLS interception splice for one TCP flow.
 pub struct TlsMitm {
     /// Toward the app: presents a minted leaf via the config's cert resolver.
@@ -49,6 +57,10 @@ pub struct TlsMitm {
     app_closed: bool,
     upstream_closed: bool,
     failed: bool,
+    /// Set when the splice failed because the app aborted mid-handshake — i.e. it
+    /// refused our minted leaf (cert pinning / user-CA distrust). Drives the
+    /// datapath's metadata-only fallback (P2-4).
+    cert_rejected: bool,
     /// Observes the decrypted plaintext both ways and yields HAR transactions.
     tap: HttpTap,
 }
@@ -69,6 +81,7 @@ impl TlsMitm {
             app_closed: false,
             upstream_closed: false,
             failed: false,
+            cert_rejected: false,
             tap: HttpTap::new(),
         })
     }
@@ -76,6 +89,14 @@ impl TlsMitm {
     /// The intercepted SNI host, once the ClientHello has been parsed.
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
+    }
+
+    /// True once the splice closed because the app rejected our minted leaf
+    /// during the handshake (cert pinning / user-CA distrust). Only meaningful
+    /// after [`pump`](Self::pump) has reported the flow closed; the datapath then
+    /// relays this app's future flows raw and reports them as metadata-only.
+    pub fn cert_rejected(&self) -> bool {
+        self.cert_rejected
     }
 
     /// Drain the HTTP transactions decrypted so far (for HAR export, P2-3).
@@ -90,7 +111,7 @@ impl TlsMitm {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(_) => {
-                    self.failed = true;
+                    self.mark_failed(FailSide::App);
                     break;
                 }
             }
@@ -105,7 +126,7 @@ impl TlsMitm {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(_) => {
-                    self.failed = true;
+                    self.mark_failed(FailSide::Upstream);
                     break;
                 }
             }
@@ -129,18 +150,18 @@ impl TlsMitm {
                     self.app_closed = true;
                 }
             }
-            Err(_) => return self.fail(),
+            Err(_) => return self.fail(FailSide::App),
         }
         if self.client.is_none() {
             if let Some(name) = self.server.server_name() {
                 self.host = Some(name.to_string());
                 self.tap.set_host(name);
                 let Ok(sni) = ServerName::try_from(name.to_string()) else {
-                    return self.fail();
+                    return self.fail(FailSide::Other);
                 };
                 match ClientConnection::new(self.client_config.clone(), sni) {
                     Ok(c) => self.client = Some(c),
-                    Err(_) => return self.fail(),
+                    Err(_) => return self.fail(FailSide::Other),
                 }
             }
         }
@@ -153,7 +174,7 @@ impl TlsMitm {
                         self.upstream_closed = true;
                     }
                 }
-                Err(_) => return self.fail(),
+                Err(_) => return self.fail(FailSide::Upstream),
             }
         }
 
@@ -172,13 +193,13 @@ impl TlsMitm {
         // Collect outbound TLS for both peers.
         while self.server.wants_write() {
             if self.server.write_tls(&mut io.to_app).is_err() {
-                return self.fail();
+                return self.fail(FailSide::Other);
             }
         }
         if let Some(client) = self.client.as_mut() {
             while client.wants_write() {
                 if client.write_tls(&mut io.to_upstream).is_err() {
-                    return self.fail();
+                    return self.fail(FailSide::Other);
                 }
             }
         }
@@ -228,8 +249,17 @@ impl TlsMitm {
         }
     }
 
-    fn fail(&mut self) -> MitmIo {
-        self.failed = true;
+    /// Latch the first failure, attributing it. An app abort while our server
+    /// session is still handshaking means the app refused our leaf (pinning).
+    fn mark_failed(&mut self, side: FailSide) {
+        if !self.failed {
+            self.failed = true;
+            self.cert_rejected = matches!(side, FailSide::App) && self.server.is_handshaking();
+        }
+    }
+
+    fn fail(&mut self, side: FailSide) -> MitmIo {
+        self.mark_failed(side);
         MitmIo { closed: true, ..Default::default() }
     }
 }
@@ -347,5 +377,44 @@ mod tests {
         assert_eq!(txns[0].response.status, 200);
         assert_eq!(txns[0].response.body, b"hi");
         assert_eq!(txns[0].host.as_deref(), Some(HOST));
+    }
+
+    #[test]
+    fn detects_cert_rejection_when_app_distrusts_our_leaf() {
+        // The app trusts only `other_ca`, not our interception CA, so it aborts
+        // the handshake on our minted leaf — exactly what a pinned app does.
+        let our_ca = Arc::new(CertAuthority::generate().unwrap());
+        let upstream_ca = Arc::new(CertAuthority::generate().unwrap());
+        let other_ca = CertAuthority::generate().unwrap();
+
+        let mut mitm =
+            TlsMitm::new(our_ca.server_config().unwrap(), client_trusting(&upstream_ca)).unwrap();
+        let mut app = ClientConnection::new(
+            client_trusting(&other_ca),
+            ServerName::try_from(HOST).unwrap(),
+        )
+        .unwrap();
+
+        let mut closed = false;
+        for _ in 0..20 {
+            let mut a2m = Vec::new();
+            while app.wants_write() {
+                app.write_tls(&mut a2m).unwrap();
+            }
+            mitm.recv_from_app(&a2m);
+            let io = mitm.pump();
+            let mut cur = &io.to_app[..];
+            while !cur.is_empty() && app.read_tls(&mut cur).unwrap() > 0 {}
+            // The app rejects our leaf here and queues a fatal alert (flushed to
+            // the mitm on the next pass); tolerate the error rather than unwrap.
+            let _ = app.process_new_packets();
+            if io.closed {
+                closed = true;
+                break;
+            }
+        }
+        assert!(closed, "the splice should have torn down after the app's rejection");
+        assert!(mitm.cert_rejected(), "leaf rejection should be flagged as a cert-pin");
+        assert_eq!(mitm.host(), Some(HOST), "SNI learned before the rejection");
     }
 }

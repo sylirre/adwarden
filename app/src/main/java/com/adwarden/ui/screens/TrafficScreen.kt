@@ -150,6 +150,11 @@ private fun TrafficRow(event: ConnectionEvent) {
         L4Proto.ICMP -> "ICMP" to Warning
         L4Proto.OTHER -> "IP" to MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val (badge, badgeColor) = when {
+        event.tlsPinned -> "TLS" to Warning
+        event.isDns -> "DNS" to Warning
+        else -> label to color
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -157,20 +162,22 @@ private fun TrafficRow(event: ConnectionEvent) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.padding(end = 12.dp)) {
-            ProtoBadge(if (event.isDns) "DNS" else label, if (event.isDns) Warning else color)
+            ProtoBadge(badge, badgeColor)
         }
         Column(Modifier.weight(1f)) {
             Text(
-                "${event.dstIp}:${event.dstPort}",
+                if (event.tlsPinned) event.host ?: "${event.dstIp}:${event.dstPort}"
+                else "${event.dstIp}:${event.dstPort}",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
             )
             Text(
-                "from :${event.srcPort} · IPv${event.ipVersion} · ${formatBytes(event.length.toLong())}",
+                if (event.tlsPinned) "metadata only · certificate pinned"
+                else "from :${event.srcPort} · IPv${event.ipVersion} · ${formatBytes(event.length.toLong())}",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (event.tlsPinned) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }

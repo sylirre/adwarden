@@ -20,6 +20,10 @@ data class ConnectionEvent(
     val uid: Int? = null,
     val verdict: Verdict = Verdict.ALLOW,
     val blockedDomain: String? = null,
+    /** HTTPS flow that pinned against our leaf: it forwards raw, so only its
+     *  metadata is visible (P2-4). [host] carries the SNI when it was learned. */
+    val tlsPinned: Boolean = false,
+    val host: String? = null,
 ) {
     val isDns: Boolean get() = proto == L4Proto.UDP && (dstPort == 53 || dstPort == 5353)
 }

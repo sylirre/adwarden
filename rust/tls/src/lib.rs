@@ -57,6 +57,11 @@ pub fn upstream_client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Err
 pub struct MitmConfigs {
     server_config: Arc<rustls::ServerConfig>,
     client_config: Arc<rustls::ClientConfig>,
+    /// Collects the app-facing (server) session secrets in NSS key-log format so
+    /// the datapath can embed them as a pcapng Decryption Secrets Block, letting
+    /// Wireshark decrypt the captured MITM'd flows (P2-4). Shared with every
+    /// splice via the server config's `key_log`.
+    key_log: Arc<KeyLogSink>,
 }
 
 impl MitmConfigs {
@@ -66,14 +71,68 @@ impl MitmConfigs {
         let ca = Arc::new(
             CertAuthority::from_pem(ca_cert_pem, ca_key_pem).map_err(|e| format!("CA load: {e}"))?,
         );
-        let server_config = ca.server_config().map_err(|e| format!("server config: {e}"))?;
+        let key_log = Arc::new(KeyLogSink::default());
+        let server_config = ca
+            .server_config_with_key_log(key_log.clone())
+            .map_err(|e| format!("server config: {e}"))?;
         let client_config = upstream_client_config().map_err(|e| format!("client config: {e}"))?;
-        Ok(MitmConfigs { server_config, client_config })
+        Ok(MitmConfigs { server_config, client_config, key_log })
     }
 
     /// Start a fresh interception splice for one flow.
     pub fn new_splice(&self) -> Result<TlsMitm, rustls::Error> {
         TlsMitm::new(self.server_config.clone(), self.client_config.clone())
+    }
+
+    /// Drain the app-facing TLS session secrets logged since the last call, as
+    /// NSS key-log text (`LABEL client_random secret\n` lines). Empty when no new
+    /// handshakes have completed. Drained every datapath pass so it can't grow
+    /// without bound; embedded into an active pcap as a Decryption Secrets Block.
+    pub fn take_key_log(&self) -> Vec<u8> {
+        self.key_log.take()
+    }
+}
+
+/// A [`rustls::KeyLog`] that accumulates secrets in NSS key-log format for later
+/// embedding in a pcapng Decryption Secrets Block. Only the app-facing (server)
+/// session is logged — that is the leg captured on the TUN.
+#[derive(Default)]
+pub struct KeyLogSink {
+    buf: Mutex<Vec<u8>>,
+}
+
+impl fmt::Debug for KeyLogSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyLogSink").finish_non_exhaustive()
+    }
+}
+
+impl KeyLogSink {
+    /// Take and clear the accumulated key-log bytes.
+    pub fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut self.buf.lock().unwrap())
+    }
+}
+
+impl rustls::KeyLog for KeyLogSink {
+    fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
+        let mut buf = self.buf.lock().unwrap();
+        buf.reserve(label.len() + 2 * (client_random.len() + secret.len()) + 3);
+        buf.extend_from_slice(label.as_bytes());
+        buf.push(b' ');
+        push_hex(&mut buf, client_random);
+        buf.push(b' ');
+        push_hex(&mut buf, secret);
+        buf.push(b'\n');
+    }
+}
+
+/// Append `bytes` to `out` as lowercase hex (the NSS key-log encoding).
+fn push_hex(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
     }
 }
 
@@ -182,13 +241,23 @@ impl CertAuthority {
 
     /// Build a rustls server config that mints leaves per SNI via this CA.
     pub fn server_config(self: &Arc<Self>) -> Result<Arc<rustls::ServerConfig>, rustls::Error> {
+        self.server_config_with_key_log(Arc::new(rustls::NoKeyLog))
+    }
+
+    /// Like [`Self::server_config`] but installs `key_log`, so the app-facing
+    /// session's secrets are exported (for a pcapng Decryption Secrets Block).
+    pub fn server_config_with_key_log(
+        self: &Arc<Self>,
+        key_log: Arc<dyn rustls::KeyLog>,
+    ) -> Result<Arc<rustls::ServerConfig>, rustls::Error> {
         let resolver = Arc::new(MintingResolver { ca: self.clone() });
-        let config = rustls::ServerConfig::builder_with_provider(
+        let mut config = rustls::ServerConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
         )
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_cert_resolver(resolver);
+        config.key_log = key_log;
         Ok(Arc::new(config))
     }
 }
@@ -300,6 +369,24 @@ mod tests {
         assert_eq!(original.ca_cert_der(), restored.ca_cert_der());
         // Leaves minted by the restored CA still chain to the same installed CA.
         handshake("api.example.org", restored.server_config().unwrap(), &restored);
+    }
+
+    #[test]
+    fn key_log_captures_app_session_secrets() {
+        let ca = Arc::new(CertAuthority::generate().unwrap());
+        let sink = Arc::new(KeyLogSink::default());
+        // Coerces Arc<KeyLogSink> -> Arc<dyn KeyLog>; the concrete Arc stays ours.
+        handshake("example.com", ca.server_config_with_key_log(sink.clone()).unwrap(), &ca);
+        let text = String::from_utf8(sink.take()).unwrap();
+        assert!(!text.is_empty(), "a completed handshake should log secrets");
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split(' ').collect();
+            assert_eq!(parts.len(), 3, "not NSS-shaped: {line:?}");
+            assert!(!parts[1].is_empty() && parts[1].bytes().all(|b| b.is_ascii_hexdigit()));
+            assert!(!parts[2].is_empty() && parts[2].bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        assert!(text.contains("CLIENT_"), "expected a CLIENT_* secret, got {text:?}");
+        assert!(sink.take().is_empty(), "draining twice yields nothing new");
     }
 
     #[test]

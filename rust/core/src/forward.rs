@@ -7,7 +7,7 @@
 //! `protect()`ed connected `UdpSocket`s. All sockets share the datapath thread's
 //! mio `Poll` via tokens allocated here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -39,6 +39,8 @@ const MITM_APP_BUF_CAP: usize = 256 * 1024;
 /// Bound on decrypted HTTP transactions retained for HAR export (P2-3). Oldest
 /// are dropped past this so a long session can't grow memory without limit.
 const HAR_MAX_ENTRIES: usize = 5_000;
+/// Bound on remembered (app, server) pairs that pin against our leaf (P2-4).
+const PINNED_CAP: usize = 4_096;
 
 /// Current default network transport, matching Kotlin's NetworkStateMonitor.
 pub const TRANSPORT_OTHER: u8 = 0;
@@ -85,6 +87,14 @@ struct TcpUpstream {
     /// Staging for MITM-produced TLS records bound for the app, drained into the
     /// smoltcp socket as its send window allows.
     to_app: Vec<u8>,
+    /// Owning app UID and upstream address — retained so a leaf rejection can be
+    /// attributed and remembered for the metadata-only fallback (P2-4).
+    uid: i32,
+    server: SocketAddr,
+    /// Set once we've reported this flow as pinned, so the metadata-only event
+    /// fires exactly once even though a failed splice stays closed across the
+    /// several service passes before the flow is finally torn down.
+    pin_reported: bool,
 }
 
 struct UdpSession {
@@ -109,6 +119,7 @@ pub struct ForwarderStats {
     pub uid_lookups: u64,
     pub blocked: u64,
     pub mitm_new: u64,
+    pub pinned: u64,
 }
 
 pub struct Forwarder {
@@ -132,6 +143,9 @@ pub struct Forwarder {
     tls: Option<MitmConfigs>,
     /// Decrypted HTTP transactions captured this session, drained on HAR export.
     har: Vec<HttpTransaction>,
+    /// (app UID, server IP) pairs whose leaf the app rejected (pinning). Future
+    /// flows to these relay raw instead of re-breaking the app (P2-4).
+    pinned: HashSet<(i32, IpAddr)>,
     stats: ForwarderStats,
 }
 
@@ -168,6 +182,7 @@ impl Forwarder {
             dns_upstream_v6: dns_v6,
             tls: build_tls_factory(config),
             har: Vec::new(),
+            pinned: HashSet::new(),
             stats: ForwarderStats::default(),
         }
     }
@@ -306,6 +321,17 @@ impl Forwarder {
     pub fn take_outbox(&mut self) -> Vec<Vec<u8>> {
         let outbox = std::mem::take(&mut self.outbox);
         self.stats.out_written += outbox.len() as u64;
+        // Drain the MITM key log every pass so its buffer can't grow unbounded;
+        // fold it into an active capture (as a DSB) ahead of this pass's packets
+        // so Wireshark has the secrets before the records they decrypt (P2-4).
+        if let Some(tls) = self.tls.as_ref() {
+            let secrets = tls.take_key_log();
+            if !secrets.is_empty() {
+                if let Some(writer) = self.pcap.as_mut() {
+                    let _ = writer.write_tls_secrets(&secrets);
+                }
+            }
+        }
         if self.pcap.is_some() {
             for packet in &outbox {
                 self.tap(packet);
@@ -404,7 +430,7 @@ impl Forwarder {
     }
 
     /// Advance the stack and pump both directions of every flow.
-    pub fn service(&mut self, _env: &mut jni::JNIEnv, _bridge: &Bridge, _batcher: &mut Batcher) {
+    pub fn service(&mut self, _env: &mut jni::JNIEnv, _bridge: &Bridge, batcher: &mut Batcher) {
         let now = self.now_ms();
         let outcome = self.stack.poll(now);
         for id in outcome.closed {
@@ -426,7 +452,7 @@ impl Forwarder {
                 }
                 // Always drive: handshakes and buffered plaintext make progress
                 // even when the app sent nothing this pass.
-                self.drive_mitm(id);
+                self.drive_mitm(id, batcher);
             } else if !data.is_empty() {
                 if let Some(up) = self.tcp.get_mut(&id) {
                     up.to_upstream.extend_from_slice(&data);
@@ -488,7 +514,7 @@ impl Forwarder {
                 if event.is_readable() {
                     if is_mitm {
                         self.read_upstream_into_mitm(id);
-                        self.drive_mitm(id);
+                        self.drive_mitm(id, batcher);
                         self.flush_to_app(id);
                     } else {
                         self.pump_upstream_to_app(id);
@@ -497,7 +523,7 @@ impl Forwarder {
                 if event.is_read_closed() || event.is_write_closed() {
                     if is_mitm {
                         self.read_upstream_into_mitm(id);
-                        self.drive_mitm(id);
+                        self.drive_mitm(id, batcher);
                         self.flush_to_app(id);
                     } else {
                         self.pump_upstream_to_app(id);
@@ -531,6 +557,9 @@ impl Forwarder {
                         write_closed: false,
                         mitm,
                         to_app: Vec::new(),
+                        uid,
+                        server,
+                        pin_reported: false,
                     },
                 );
             }
@@ -547,6 +576,11 @@ impl Forwarder {
     /// Returns `None` (raw relay) otherwise.
     fn new_mitm_if_intercepting(&mut self, server: SocketAddr, uid: i32) -> Option<TlsMitm> {
         if server.port() != HTTPS_PORT || !self.app_inspects(uid) {
+            return None;
+        }
+        // This app already rejected our leaf for this server: relay raw so it
+        // keeps working (metadata-only) instead of breaking it again (P2-4).
+        if self.pinned.contains(&(uid, server.ip())) {
             return None;
         }
         let splice = self.tls.as_ref()?.new_splice();
@@ -615,7 +649,7 @@ impl Forwarder {
 
     /// Advance a flow's TLS splice: pump it, queue the produced TLS records
     /// toward each peer, and on completion/failure tear the flow down.
-    fn drive_mitm(&mut self, id: FlowId) {
+    fn drive_mitm(&mut self, id: FlowId, batcher: &mut Batcher) {
         let io = match self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
             Some(mitm) => mitm.pump(),
             None => return,
@@ -626,6 +660,7 @@ impl Forwarder {
         }
         self.drain_mitm_transactions(id);
         if io.closed {
+            self.note_pin_if_rejected(id, batcher);
             // Flush whatever the splice produced, then close both directions.
             self.flush_to_upstream(id);
             self.flush_to_app(id);
@@ -637,6 +672,27 @@ impl Forwarder {
                 }
             }
         }
+    }
+
+    /// If the splice closed because the app refused our leaf, remember the
+    /// (app, server) pair so future flows relay raw, and surface the flow as
+    /// metadata-only in the live log (P2-4). Fires once, as the splice closes.
+    fn note_pin_if_rejected(&mut self, id: FlowId, batcher: &mut Batcher) {
+        let Some(up) = self.tcp.get(&id) else { return };
+        let Some(mitm) = up.mitm.as_ref() else { return };
+        if up.pin_reported || !mitm.cert_rejected() {
+            return;
+        }
+        let (uid, server) = (up.uid, up.server);
+        let host = mitm.host().map(str::to_string);
+        if let Some(up) = self.tcp.get_mut(&id) {
+            up.pin_reported = true;
+        }
+        if self.pinned.len() < PINNED_CAP {
+            self.pinned.insert((uid, server.ip()));
+        }
+        self.stats.pinned += 1;
+        batcher.push(Event::tls_pinned(uid, server, host));
     }
 
     /// Pull any HTTP transactions the splice has decrypted into the session HAR

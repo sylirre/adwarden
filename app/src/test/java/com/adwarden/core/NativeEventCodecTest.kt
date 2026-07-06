@@ -112,6 +112,37 @@ class NativeEventCodecTest {
     }
 
     @Test
+    fun decodesTlsPinnedFlowAsMetadataOnly() {
+        val host = "api.bank.example"
+        val payload = 4 + (4 + 4 + 4 + 4 + 8 + 16 + 16 + 2 + host.length)
+        val buf = ByteBuffer.allocate(payload).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(1)
+        buildEvent(
+            buf,
+            kind = 2, // TLS pinned (metadata only)
+            ipVersion = 4,
+            proto = 0, // TCP
+            verdict = 0, // ALLOW — it still forwards, just raw
+            uid = 10200,
+            srcPort = 0,
+            dstPort = 443,
+            length = 0,
+            timestampMs = 4242L,
+            src = ByteArray(4),
+            dst = byteArrayOf(93.toByte(), 184.toByte(), 216.toByte(), 34),
+            domain = host,
+        )
+
+        val e = NativeEventCodec.decode(buf.array()).single()
+        assertTrue(e.tlsPinned)
+        assertEquals(host, e.host)
+        assertNull(e.blockedDomain) // host isn't a DNS-block domain
+        assertEquals(Verdict.ALLOW, e.verdict)
+        assertEquals(10200, e.uid)
+        assertEquals("93.184.216.34", e.dstIp)
+    }
+
+    @Test
     fun emptyBatchDecodesToEmptyList() {
         assertTrue(NativeEventCodec.decode(ByteArray(0)).isEmpty())
         val buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)

@@ -25,7 +25,7 @@ object NativeEventCodec {
         val out = ArrayList<ConnectionEvent>(count)
         repeat(count) {
             if (buf.remaining() < FIXED_LEN) return out
-            buf.get() // kind (reserved; distinguishes flow vs dns-block, unused for now)
+            val kind = buf.get().toInt() and 0xFF // flow / dns-block / tls-pinned
             val ipVersion = buf.get().toInt() and 0xFF
             val proto = protoOf(buf.get().toInt() and 0xFF)
             val verdict = if ((buf.get().toInt() and 0xFF) == 1) Verdict.BLOCK else Verdict.ALLOW
@@ -57,7 +57,9 @@ object NativeEventCodec {
                     length = length,
                     uid = if (uidRaw < 0) null else uidRaw,
                     verdict = verdict,
-                    blockedDomain = domain,
+                    blockedDomain = if (kind == KIND_DNS_BLOCK) domain else null,
+                    tlsPinned = kind == KIND_TLS_PINNED,
+                    host = if (kind == KIND_TLS_PINNED) domain else null,
                 ),
             )
         }
@@ -83,4 +85,8 @@ object NativeEventCodec {
 
     // kind+ipver+proto+verdict(4) + uid(4) + ports(4) + length(4) + ts(8) + src(16) + dst(16) + domainLen(2)
     private const val FIXED_LEN = 4 + 4 + 4 + 4 + 8 + 16 + 16 + 2
+
+    // Event kinds — must match rust/core/src/event.rs.
+    private const val KIND_DNS_BLOCK = 1
+    private const val KIND_TLS_PINNED = 2
 }
