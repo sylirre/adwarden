@@ -18,14 +18,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +53,7 @@ private val TINTS = listOf(BrandBlue, BrandViolet, BrandCyan, Success, Warning)
 fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
     val apps by viewModel.apps.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
+    var query by remember { mutableStateOf("") }
 
     Column(
         Modifier
@@ -75,11 +81,41 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
             return
         }
 
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search apps") },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        val filtered = remember(apps, query) {
+            if (query.isBlank()) apps
+            else apps.filter {
+                it.app.label.contains(query, ignoreCase = true) ||
+                    it.app.packageName.contains(query, ignoreCase = true)
+            }
+        }
+
+        if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "No apps match \"$query\"",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            return
+        }
+
         LazyColumn(
             Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(apps, key = { it.app.packageName }) { policy ->
+            items(filtered, key = { it.app.packageName }) { policy ->
                 AppCard(
                     policy = policy,
                     onWifi = { viewModel.setWifi(policy, !policy.allowWifi) },
