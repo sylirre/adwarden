@@ -33,7 +33,7 @@ import com.adwarden.ui.screens.SettingsScreen
 import com.adwarden.ui.screens.TrafficScreen
 
 private enum class Destination(val label: String, val icon: ImageVector) {
-    DASHBOARD("Shield", Icons.Rounded.Shield),
+    DASHBOARD("Dashboard", Icons.Rounded.Shield),
     APPS("Apps", Icons.Rounded.Apps),
     TRAFFIC("Traffic", Icons.Rounded.Timeline),
     FILTERS("Filters", Icons.Rounded.FilterAlt),

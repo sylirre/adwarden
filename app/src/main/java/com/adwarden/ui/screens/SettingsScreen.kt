@@ -1,5 +1,9 @@
 package com.adwarden.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
@@ -27,17 +32,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
+import com.adwarden.data.settings.ThemeMode
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.components.SectionTitle
 import com.adwarden.ui.components.ToggleRow
+import com.adwarden.ui.theme.AdwShapes
 
 @Composable
 fun SettingsScreen(viewModel: MainViewModel) {
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val blockEncryptedDns by viewModel.blockEncryptedDns.collectAsStateWithLifecycle()
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
     val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
@@ -57,13 +68,16 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
         SectionTitle("Appearance")
         AdwCard(Modifier.fillMaxWidth()) {
-            ToggleRow(
-                title = "Material You colors",
-                subtitle = "Match the system wallpaper palette (Android 12+)",
-                checked = dynamicColor,
-                onCheckedChange = viewModel::setDynamicColor,
-                leading = Icons.Rounded.DarkMode,
-            )
+            Column {
+                ThemeModePicker(selected = themeMode, onSelect = viewModel::setThemeMode)
+                ToggleRow(
+                    title = "Material You colors",
+                    subtitle = "Match the system wallpaper palette (Android 12+)",
+                    checked = dynamicColor,
+                    onCheckedChange = viewModel::setDynamicColor,
+                    leading = Icons.Rounded.DarkMode,
+                )
+            }
         }
 
         Spacer(Modifier.height(20.dp))
@@ -130,6 +144,55 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
     if (showCaWizard) {
         CaInstallDialog(certPem = caCertPem, onDismiss = { showCaWizard = false })
+    }
+}
+
+@Composable
+private fun ThemeModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(
+            "Theme",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.entries.forEach { mode ->
+                val label = when (mode) {
+                    ThemeMode.SYSTEM -> "System"
+                    ThemeMode.LIGHT -> "Light"
+                    ThemeMode.DARK -> "Dark"
+                }
+                val chosen = mode == selected
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(AdwShapes.Field)
+                        .background(
+                            if (chosen) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        )
+                        .border(
+                            1.dp,
+                            if (chosen) Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
+                            AdwShapes.Field,
+                        )
+                        .selectable(selected = chosen, role = Role.RadioButton) { onSelect(mode) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (chosen) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

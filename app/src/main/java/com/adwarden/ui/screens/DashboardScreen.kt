@@ -1,7 +1,7 @@
 package com.adwarden.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +34,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -263,7 +267,13 @@ private fun HeroCard(
                     .height(52.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color.White)
-                    .clickable(onClick = onToggle),
+                    .toggleable(
+                        value = running,
+                        role = Role.Switch,
+                        onValueChange = { onToggle() },
+                    )
+                    .semantics { stateDescription = if (running) "Protected" else "Off" }
+                    .testTag("protection_toggle"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
             ) {

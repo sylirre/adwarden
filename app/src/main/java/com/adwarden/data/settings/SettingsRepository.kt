@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.SharedPreferencesMigration
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,10 +14,14 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** How the app resolves light/dark, independent of the Material You palette. */
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
 /** User preferences persisted to a Preferences DataStore. */
 data class AppSettings(
     val onboarded: Boolean = false,
     val dynamicColor: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val blockEncryptedDns: Boolean = false,
     val interceptTls: Boolean = false,
 )
@@ -39,6 +44,8 @@ class SettingsRepository @Inject constructor(
         AppSettings(
             onboarded = prefs[KEY_ONBOARDED] ?: false,
             dynamicColor = prefs[KEY_DYNAMIC_COLOR] ?: false,
+            themeMode = prefs[KEY_THEME_MODE]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
+                ?: ThemeMode.SYSTEM,
             blockEncryptedDns = prefs[KEY_BLOCK_ENCRYPTED_DNS] ?: false,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
         )
@@ -47,6 +54,8 @@ class SettingsRepository @Inject constructor(
     suspend fun setOnboarded(value: Boolean) = store.edit { it[KEY_ONBOARDED] = value }
 
     suspend fun setDynamicColor(value: Boolean) = store.edit { it[KEY_DYNAMIC_COLOR] = value }
+
+    suspend fun setThemeMode(value: ThemeMode) = store.edit { it[KEY_THEME_MODE] = value.name }
 
     suspend fun setBlockEncryptedDns(value: Boolean) =
         store.edit { it[KEY_BLOCK_ENCRYPTED_DNS] = value }
@@ -57,6 +66,7 @@ class SettingsRepository @Inject constructor(
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
     }

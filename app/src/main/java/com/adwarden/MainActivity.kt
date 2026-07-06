@@ -10,9 +10,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.adwarden.data.settings.ThemeMode
 import com.adwarden.ui.AdwardenRoot
 import com.adwarden.ui.theme.AdwardenTheme
 import com.adwarden.vpn.AdwardenVpnService
@@ -40,7 +42,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
-            AdwardenTheme(dynamicColor = dynamicColor) {
+            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val darkTheme = when (themeMode) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            AdwardenTheme(darkTheme = darkTheme, dynamicColor = dynamicColor) {
                 AdwardenRoot(
                     viewModel = viewModel,
                     onToggleProtection = ::toggleProtection,

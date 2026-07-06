@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.adwarden.data.CaRepository
 import com.adwarden.data.CaptureRepository
 import com.adwarden.data.settings.SettingsRepository
+import com.adwarden.data.settings.ThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,6 +38,10 @@ class MainViewModel @Inject constructor(
         .map { it.dynamicColor }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.dynamicColor)
 
+    val themeMode: StateFlow<ThemeMode> = settings.settings
+        .map { it.themeMode }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.themeMode)
+
     val blockEncryptedDns: StateFlow<Boolean> = settings.settings
         .map { it.blockEncryptedDns }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.blockEncryptedDns)
@@ -60,6 +65,10 @@ class MainViewModel @Inject constructor(
 
     fun setDynamicColor(value: Boolean) {
         viewModelScope.launch { settings.setDynamicColor(value) }
+    }
+
+    fun setThemeMode(value: ThemeMode) {
+        viewModelScope.launch { settings.setThemeMode(value) }
     }
 
     fun setBlockEncryptedDns(value: Boolean) {

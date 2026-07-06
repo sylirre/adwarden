@@ -2,7 +2,7 @@ package com.adwarden.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,11 +37,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.ui.components.AdwCard
+import com.adwarden.ui.theme.AdwShapes
 import com.adwarden.ui.theme.BrandBlue
 import com.adwarden.ui.theme.BrandCyan
 import com.adwarden.ui.theme.BrandViolet
@@ -171,11 +176,11 @@ private fun AppCard(
                     color = if (!wifi || !mobile) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            MiniToggle(Icons.Rounded.Wifi, wifi, onWifi)
+            MiniToggle(Icons.Rounded.Wifi, wifi, "Wi-Fi for $label", onWifi)
             Spacer(Modifier.size(8.dp))
-            MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, onMobile)
+            MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, "Mobile data for $label", onMobile)
             Spacer(Modifier.size(8.dp))
-            MiniToggle(Icons.Rounded.Lock, policy.inspectTls, onInspect)
+            MiniToggle(Icons.Rounded.Lock, policy.inspectTls, "HTTPS inspection for $label", onInspect)
         }
     }
 }
@@ -188,16 +193,19 @@ private fun statusText(wifi: Boolean, mobile: Boolean): String = when {
 }
 
 @Composable
-private fun MiniToggle(icon: ImageVector, on: Boolean, onClick: () -> Unit) {
+private fun MiniToggle(icon: ImageVector, on: Boolean, label: String, onClick: () -> Unit) {
     val bg = if (on) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
     val fg = if (on) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.outline
     Box(
         Modifier
+            // Keep the 40dp visual but guarantee a >=48dp touch target for a11y.
+            .minimumInteractiveComponentSize()
             .size(40.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(AdwShapes.Chip)
             .background(bg)
-            .border(1.dp, if (on) Color.Transparent else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick),
+            .border(1.dp, if (on) Color.Transparent else MaterialTheme.colorScheme.outlineVariant, AdwShapes.Chip)
+            .toggleable(value = on, role = Role.Switch, onValueChange = { onClick() })
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(20.dp))

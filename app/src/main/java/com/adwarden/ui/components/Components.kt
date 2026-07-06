@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +27,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.util.Locale
@@ -63,7 +66,7 @@ fun StatTile(
     tint: Color,
     modifier: Modifier = Modifier,
 ) {
-    AdwCard(modifier = modifier) {
+    AdwCard(modifier = modifier.semantics(mergeDescendants = true) {}) {
         Column(Modifier.padding(16.dp)) {
             Box(
                 Modifier
@@ -113,6 +116,9 @@ fun ToggleRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // The whole row is the switch: bigger target + a single, correctly
+            // announced control (Role.Switch with on/off state) for TalkBack.
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -132,7 +138,8 @@ fun ToggleRow(
                 Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        // Row owns the toggle semantics; the Switch is now purely visual.
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

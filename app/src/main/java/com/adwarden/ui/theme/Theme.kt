@@ -63,6 +63,7 @@ fun AdwardenTheme(
     MaterialTheme(
         colorScheme = scheme,
         typography = AdwardenTypography,
+        shapes = AdwardenShapes,
         content = content,
     )
 }
