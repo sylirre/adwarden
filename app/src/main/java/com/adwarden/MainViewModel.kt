@@ -4,25 +4,35 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adwarden.data.CaRepository
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.StatsRepository
 import com.adwarden.data.settings.SettingsRepository
 import com.adwarden.data.settings.ThemeMode
+import com.adwarden.firewall.AppInventory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.time.LocalDate
 import javax.inject.Inject
+
+/** A ranked dashboard row: a display [label] and its [count]. */
+data class RankedItem(val label: String, val count: Long)
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val ca: CaRepository,
     captureRepository: CaptureRepository,
+    statsRepository: StatsRepository,
+    inventory: AppInventory,
 ) : ViewModel() {
 
     // Read the gate values once, synchronously, at construction. This mirrors the
@@ -59,6 +69,46 @@ class MainViewModel @Inject constructor(
     val events = captureRepository.events
     val running = captureRepository.running
 
+    // --- Persistent history (P3-3) ------------------------------------------
+    // Window is resolved once at construction; a day-boundary crossing while the
+    // screen stays open is corrected on the next open (acceptable staleness).
+    private val weekStartDay = LocalDate.now().toEpochDay() - (HISTORY_DAYS - 1)
+
+    private val history: StateFlow<List<com.adwarden.data.db.DailyStat>> =
+        statsRepository.dailyStatsSince(weekStartDay)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Blocked-per-day over the last [HISTORY_DAYS] days, oldest→newest, zero-filled. */
+    val weekBlockedPerDay: StateFlow<List<Long>> = history
+        .map { rows ->
+            val byDay = rows.associateBy { it.dateEpochDay }
+            (0 until HISTORY_DAYS).map { i -> byDay[weekStartDay + i]?.blocked ?: 0L }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), List(HISTORY_DAYS) { 0L })
+
+    val blockedToday: StateFlow<Long> = history
+        .map { rows -> rows.find { it.dateEpochDay == weekStartDay + (HISTORY_DAYS - 1) }?.blocked ?: 0L }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+
+    val blockedThisWeek: StateFlow<Long> = history
+        .map { rows -> rows.sumOf { it.blocked } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
+
+    val topBlockedDomains: StateFlow<List<RankedItem>> =
+        statsRepository.topDomains(weekStartDay, TOP_LIMIT)
+            .map { list -> list.map { RankedItem(it.key, it.count) } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // uid→label, resolved once (installed apps rarely change within a session).
+    private val uidLabels: StateFlow<Map<Int, String>> =
+        flow { emit(inventory.load().associate { it.uid to it.label }) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    val topBlockedApps: StateFlow<List<RankedItem>> =
+        combine(statsRepository.topApps(weekStartDay, TOP_LIMIT), uidLabels) { tallies, labels ->
+            tallies.map { RankedItem(labels[it.key.toIntOrNull()] ?: "App ${it.key}", it.count) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     fun completeOnboarding() {
         viewModelScope.launch { settings.setOnboarded(true) }
     }
@@ -85,5 +135,10 @@ class MainViewModel @Inject constructor(
     /** Ensure the CA exists and publish its cert PEM for the install wizard. */
     fun prepareCaForInstall() {
         viewModelScope.launch { _caCertPem.value = ca.caCertPem() }
+    }
+
+    private companion object {
+        const val HISTORY_DAYS = 7
+        const val TOP_LIMIT = 5
     }
 }

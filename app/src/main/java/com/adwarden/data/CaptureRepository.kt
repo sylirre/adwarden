@@ -4,11 +4,32 @@ import com.adwarden.core.CaptureStats
 import com.adwarden.core.ConnectionEvent
 import com.adwarden.core.L4Proto
 import com.adwarden.core.Verdict
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Per-batch increments handed to [StatsRepository] for persistence. Emitted once
+ * per native upcall (see [CaptureRepository.onEvents]) so daily aggregates can be
+ * rolled up without re-deriving them from the throttled, session-resetting
+ * [CaptureStats] StateFlow. [blockedDomains]/[blockedApps] map a blocked domain /
+ * owning uid to its occurrence count within the batch.
+ */
+data class StatsDelta(
+    val packets: Long,
+    val bytes: Long,
+    val tcpPackets: Long,
+    val dnsQueries: Long,
+    val blocked: Long,
+    val blockedDomains: Map<String, Int>,
+    val blockedApps: Map<Int, Int>,
+)
 
 /**
  * Bridge between the capture producer (the native core, via NativeBridge) and
@@ -45,6 +66,16 @@ class CaptureRepository @Inject constructor() {
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
+    // Fire-and-forget increments for persistent daily aggregates. Buffered +
+    // DROP_OLDEST so tryEmit() from the datapath thread never blocks; the
+    // in-memory consumer keeps up in practice, so drops only happen under
+    // pathological bursts (a few uncounted stat increments, never a crash).
+    private val _deltas = MutableSharedFlow<StatsDelta>(
+        extraBufferCapacity = 128,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val deltas: SharedFlow<StatsDelta> = _deltas.asSharedFlow()
+
     fun onStarted() {
         synchronized(lock) {
             packets = 0; bytes = 0; tcp = 0; udp = 0; dns = 0; blocked = 0; seq = 0
@@ -68,22 +99,38 @@ class CaptureRepository @Inject constructor() {
      */
     fun onEvents(batch: List<ConnectionEvent>) {
         if (batch.isEmpty()) return
+        // Accumulate this batch's contribution to the persistent daily aggregates
+        // in the same pass we already make over the events.
+        var dPackets = 0L
+        var dBytes = 0L
+        var dTcp = 0L
+        var dDns = 0L
+        var dBlocked = 0L
+        val dDomains = HashMap<String, Int>()
+        val dApps = HashMap<Int, Int>()
         synchronized(lock) {
             for (event in batch) {
-                packets++
-                bytes += event.length
+                packets++; dPackets++
+                bytes += event.length; dBytes += event.length
                 when (event.proto) {
-                    L4Proto.TCP -> tcp++
+                    L4Proto.TCP -> { tcp++; dTcp++ }
                     L4Proto.UDP -> udp++
                     else -> {}
                 }
-                if (event.isDns) dns++
-                if (event.verdict == Verdict.BLOCK) blocked++
+                if (event.isDns) { dns++; dDns++ }
+                if (event.verdict == Verdict.BLOCK) {
+                    blocked++; dBlocked++
+                    event.blockedDomain?.let { dDomains.merge(it, 1, Int::plus) }
+                    event.uid?.let { if (it > 0) dApps.merge(it, 1, Int::plus) }
+                }
                 if (dests.size < 8000) dests.add(event.dstIp)
                 recent.addFirst(event.copy(id = ++seq))
                 while (recent.size > MAX_EVENTS) recent.removeLast()
             }
         }
+        _deltas.tryEmit(
+            StatsDelta(dPackets, dBytes, dTcp, dDns, dBlocked, dDomains, dApps),
+        )
         publish(force = false)
     }
 

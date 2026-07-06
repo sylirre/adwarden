@@ -20,7 +20,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -176,6 +178,47 @@ fun Sparkline(
             ),
         )
         drawPath(line, color = lineColor, style = Stroke(width = 3f, cap = StrokeCap.Round))
+    }
+}
+
+/**
+ * Minimal vertical bar chart (e.g. blocked-per-day). Each value gets a centered
+ * bar over a faint full-height track so empty slots stay visible; heights scale to
+ * the window max. Zero-dependency Canvas, matching [Sparkline].
+ */
+@Composable
+fun BarChart(
+    values: List<Float>,
+    barColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        if (values.isEmpty()) return@Canvas
+        val maxV = max(1f, values.max())
+        val n = values.size
+        val slot = size.width / n
+        val barW = slot * 0.56f
+        val inset = (slot - barW) / 2f
+        val radius = CornerRadius(barW / 3f, barW / 3f)
+        values.forEachIndexed { i, v ->
+            val x = i * slot + inset
+            // Faint track for the full slot height.
+            drawRoundRect(
+                color = barColor.copy(alpha = 0.12f),
+                topLeft = Offset(x, 0f),
+                size = Size(barW, size.height),
+                cornerRadius = radius,
+            )
+            val h = (v / maxV) * size.height
+            if (h > 0f) {
+                drawRoundRect(
+                    color = barColor,
+                    topLeft = Offset(x, size.height - h),
+                    size = Size(barW, h),
+                    cornerRadius = radius,
+                )
+            }
+        }
     }
 }
 

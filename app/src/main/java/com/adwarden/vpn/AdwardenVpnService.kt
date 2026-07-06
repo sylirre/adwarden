@@ -27,6 +27,7 @@ import com.adwarden.data.CaMaterial
 import com.adwarden.data.CaptureRepository
 import com.adwarden.data.CaRepository
 import com.adwarden.data.FilterRepository
+import com.adwarden.data.StatsRepository
 import com.adwarden.data.settings.SettingsRepository
 import com.adwarden.firewall.NetworkStateMonitor
 import dagger.hilt.android.AndroidEntryPoint
@@ -60,6 +61,11 @@ import javax.inject.Inject
 class AdwardenVpnService : VpnService() {
 
     @Inject lateinit var capture: CaptureRepository
+    // Injected purely to anchor its lifetime to the running service: constructing
+    // it starts the delta→daily-aggregate collector, so persistent stats record
+    // even when no UI is bound (P3-3).
+    @Suppress("unused")
+    @Inject lateinit var stats: StatsRepository
     @Inject lateinit var settings: SettingsRepository
     @Inject lateinit var filters: FilterRepository
     @Inject lateinit var appRules: AppRuleRepository

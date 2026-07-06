@@ -3,6 +3,10 @@ package com.adwarden.data
 import com.adwarden.core.ConnectionEvent
 import com.adwarden.core.L4Proto
 import com.adwarden.core.Verdict
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -17,6 +21,8 @@ class CaptureRepositoryTest {
         length: Int,
         verdict: Verdict = Verdict.ALLOW,
         dstIp: String = "1.1.1.1",
+        uid: Int? = null,
+        blockedDomain: String? = if (verdict == Verdict.BLOCK) "ads.test" else null,
     ) = ConnectionEvent(
         id = 0,
         timestampMs = 1,
@@ -27,8 +33,9 @@ class CaptureRepositoryTest {
         dstIp = dstIp,
         dstPort = dstPort,
         length = length,
+        uid = uid,
         verdict = verdict,
-        blockedDomain = if (verdict == Verdict.BLOCK) "ads.test" else null,
+        blockedDomain = blockedDomain,
     )
 
     @Test
@@ -62,6 +69,33 @@ class CaptureRepositoryTest {
         repo.onEvents(listOf(event(L4Proto.TCP, 443, 10), event(L4Proto.TCP, 443, 10)))
         val ids = repo.events.value.map { it.id }.toSet()
         assertEquals(2, ids.size) // distinct ids assigned
+    }
+
+    @Test
+    fun emitsStatsDeltaWithBlockedAttribution() = runTest {
+        val repo = CaptureRepository()
+        repo.onStarted()
+        // UNDISPATCHED runs the collector synchronously until it subscribes to the
+        // (replay-less) SharedFlow and suspends, so the emit below isn't missed.
+        val deferred = async(start = CoroutineStart.UNDISPATCHED) {
+            repo.deltas.first()
+        }
+        repo.onEvents(
+            listOf(
+                event(L4Proto.TCP, 443, 100),
+                event(L4Proto.UDP, 53, 60, verdict = Verdict.BLOCK, uid = 10005, blockedDomain = "ads.test"),
+                event(L4Proto.UDP, 53, 60, verdict = Verdict.BLOCK, uid = 10005, blockedDomain = "trk.test"),
+            ),
+        )
+
+        val delta = deferred.await()
+        assertEquals(3, delta.packets)
+        assertEquals(220, delta.bytes)
+        assertEquals(1, delta.tcpPackets)
+        assertEquals(2, delta.dnsQueries)
+        assertEquals(2, delta.blocked)
+        assertEquals(mapOf("ads.test" to 1, "trk.test" to 1), delta.blockedDomains)
+        assertEquals(mapOf(10005 to 2), delta.blockedApps)
     }
 
     @Test

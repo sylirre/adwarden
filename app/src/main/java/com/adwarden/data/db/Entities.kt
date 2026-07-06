@@ -1,5 +1,6 @@
 package com.adwarden.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -47,4 +48,38 @@ data class AppRule(
     val allowCellular: Boolean = true,
     /** Opt this app's HTTPS into TLS interception (P2). Default off. */
     val inspectTls: Boolean = false,
+)
+
+/**
+ * One row per calendar day (local-zone epoch-day, as [java.time.LocalDate.toEpochDay])
+ * holding the running totals for that day. Written by [com.adwarden.data.StatsRepository]
+ * via increment-upsert, so the dashboard's "blocked today / this week" survives
+ * process death and protection restarts (the live [com.adwarden.core.CaptureStats]
+ * resets every session). Days with no traffic simply have no row.
+ */
+@Entity(tableName = "daily_stat")
+data class DailyStat(
+    @PrimaryKey val dateEpochDay: Long,
+    @ColumnInfo(defaultValue = "0") val packets: Long = 0,
+    @ColumnInfo(defaultValue = "0") val bytes: Long = 0,
+    @ColumnInfo(defaultValue = "0") val tcpPackets: Long = 0,
+    @ColumnInfo(defaultValue = "0") val dnsQueries: Long = 0,
+    @ColumnInfo(defaultValue = "0") val blocked: Long = 0,
+)
+
+/** What a [BlockedTally] row counts: a blocked domain, or a blocked app (by uid). */
+enum class TallyKind { DOMAIN, APP }
+
+/**
+ * Per-day "top blocked" tally. [key] is the blocked domain (for [TallyKind.DOMAIN])
+ * or the owning uid as a string (for [TallyKind.APP], resolved to an app label at
+ * display time). Aggregated across a window to rank the worst offenders without
+ * keeping a full per-event history.
+ */
+@Entity(tableName = "blocked_tally", primaryKeys = ["dateEpochDay", "kind", "key"])
+data class BlockedTally(
+    val dateEpochDay: Long,
+    val kind: TallyKind,
+    val key: String,
+    @ColumnInfo(defaultValue = "0") val count: Long = 0,
 )

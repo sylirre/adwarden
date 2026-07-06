@@ -11,15 +11,28 @@ class Converters {
 
     @TypeConverter
     fun stringToFormat(value: String): FilterFormat = FilterFormat.valueOf(value)
+
+    @TypeConverter
+    fun tallyKindToString(kind: TallyKind): String = kind.name
+
+    @TypeConverter
+    fun stringToTallyKind(value: String): TallyKind = TallyKind.valueOf(value)
 }
 
 @Database(
-    entities = [FilterSubscription::class, CustomRule::class, AppRule::class],
-    version = 2,
+    entities = [
+        FilterSubscription::class,
+        CustomRule::class,
+        AppRule::class,
+        DailyStat::class,
+        BlockedTally::class,
+    ],
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class AdwardenDatabase : RoomDatabase() {
     abstract fun filterDao(): FilterDao
     abstract fun appRuleDao(): AppRuleDao
+    abstract fun statsDao(): StatsDao
 }
