@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -37,8 +38,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.Inet6Address
 import javax.inject.Inject
 
 /**
@@ -67,6 +71,11 @@ class AdwardenVpnService : VpnService() {
     private var underlyingCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var currentUnderlying: Network? = null
 
+    // Whether the live tunnel currently advertises IPv6. Toggled by re-establish
+    // when the underlay's working-v6 status changes. Serialized by [v6Mutex].
+    @Volatile private var tunnelHasV6 = false
+    private val v6Mutex = Mutex()
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
@@ -94,14 +103,17 @@ class AdwardenVpnService : VpnService() {
         }
         Log.i(TAG, "Native core loaded (abi=${runCatching { NativeCore.nativeAbiVersion() }.getOrDefault(-1)})")
 
-        val fd = establishTunnel()
+        // Advertise IPv6 from the start only if the current underlay carries
+        // working global v6; otherwise the callback reconciles it later.
+        val initialV6 = runCatching { activeUnderlayHasGlobalV6() }.getOrDefault(false)
+        val fd = establishTunnel(includeIpv6 = initialV6)
         if (fd == null) {
             Log.e(TAG, "establishTunnel returned null")
             stopEverything()
             stopSelf()
             return
         }
-        Log.i(TAG, "TUN established")
+        Log.i(TAG, "TUN established (v6=$initialV6)")
 
         // Ownership of the descriptor transfers to the native core, which closes
         // it on nativeStop. We must not touch it after detachFd().
@@ -127,9 +139,12 @@ class AdwardenVpnService : VpnService() {
         nativeHandle = handle
         sessionHolder.set(handle)
         running = true
-        registerUnderlyingNetworkTracking()
+        tunnelHasV6 = initialV6
         capture.onStarted()
+        // Observers create serviceScope, which reconcileV6 launches onto — start
+        // them before registering the callback that can trigger a reconcile.
         startObservers()
+        registerUnderlyingNetworkTracking()
         Log.i(TAG, "Capture started")
     }
 
@@ -154,6 +169,13 @@ class AdwardenVpnService : VpnService() {
             override fun onAvailable(network: Network) {
                 currentUnderlying = network
                 applyUnderlying(arrayOf(network))
+                scheduleV6Reconcile()
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                // A global v6 address often arrives shortly AFTER onAvailable
+                // (SLAAC), and can also disappear — re-evaluate the tunnel's v6.
+                if (network == currentUnderlying) scheduleV6Reconcile()
             }
 
             override fun onLost(network: Network) {
@@ -192,6 +214,102 @@ class AdwardenVpnService : VpnService() {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             cm.unregisterNetworkCallback(callback)
         }
+    }
+
+    /**
+     * IPv6 egress is gated on the underlay actually carrying working global v6.
+     * When that changes (roaming, SLAAC completing, v6 dropping), re-establish the
+     * tunnel to add or remove the v6 address/route. Serialized via [v6Mutex] so
+     * overlapping network events collapse to the final desired state.
+     */
+    private fun scheduleV6Reconcile() {
+        val scope = serviceScope ?: return
+        scope.launch { v6Mutex.withLock { reconcileV6() } }
+    }
+
+    private suspend fun reconcileV6() {
+        if (!running) return
+        val underlay = currentUnderlying
+        val desired = underlay != null && networkHasGlobalV6(underlay)
+        if (desired == tunnelHasV6) return
+        Log.i(TAG, "Underlay IPv6 availability changed -> re-establishing (v6=$desired)")
+        reestablishTunnel(desired)
+    }
+
+    /**
+     * Stop the native session, rebuild the TUN with/without v6, restart the core,
+     * and re-push the filter/firewall/network state the running observers won't
+     * re-emit. A network switch breaks every in-flight upstream socket anyway, so
+     * dropping and rebuilding the session here is the clean, safe path.
+     */
+    private suspend fun reestablishTunnel(withV6: Boolean) {
+        val old = nativeHandle
+        if (old != 0L) NativeCore.nativeStop(old)
+        nativeHandle = 0L
+        sessionHolder.clear()
+
+        val fd = establishTunnel(includeIpv6 = withV6)
+        if (fd == null) {
+            Log.e(TAG, "Re-establish failed to build tunnel; stopping")
+            stopEverything(); stopSelf(); return
+        }
+        val rawFd = fd.detachFd()
+        val connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val bridge = NativeBridge(
+            capture = capture,
+            connectivity = connectivity,
+            protector = { socketFd -> protect(socketFd) },
+        )
+        val handle = NativeCore.nativeStart(rawFd, buildConfigJson(), bridge)
+        if (handle == 0L) {
+            Log.e(TAG, "Re-establish nativeStart failed; closing fd and stopping")
+            runCatching { ParcelFileDescriptor.adoptFd(rawFd).close() }
+            stopEverything(); stopSelf(); return
+        }
+        nativeHandle = handle
+        sessionHolder.set(handle)
+        tunnelHasV6 = withV6
+        applyUnderlying(currentUnderlying?.let { arrayOf(it) })
+        reapplyNativeState(handle)
+        Log.i(TAG, "Tunnel re-established (v6=$withV6, handle=$handle)")
+    }
+
+    /** Re-push state a fresh native session doesn't carry from its start config. */
+    private suspend fun reapplyNativeState(handle: Long) {
+        if (filters.hasCompiledEngine()) {
+            NativeCore.nativeUpdateFilter(handle, filters.engineCacheFile.absolutePath)
+        }
+        NativeCore.nativeUpdateFirewall(handle, appRules.encodeBlob(appRules.rules.first()))
+        val net = networkMonitor.state.first()
+        NativeCore.nativeUpdateNetwork(handle, net.transport, net.metered, net.roaming)
+    }
+
+    private fun activeUnderlayHasGlobalV6(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val net = cm.activeNetwork ?: return false
+        return networkHasGlobalV6(net)
+    }
+
+    /**
+     * True when [network] carries working global IPv6: it has a global-unicast
+     * (2000::/3) source address AND a default v6 route. Requiring both avoids the
+     * "addressed but unrouted" false positive that would resurrect the SYN-retry
+     * storm the IPv4-only tunnel was built to dodge.
+     */
+    private fun networkHasGlobalV6(network: Network): Boolean {
+        val lp = runCatching {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                .getLinkProperties(network)
+        }.getOrNull() ?: return false
+        val hasGlobalAddr = lp.linkAddresses.any { la ->
+            val a = la.address
+            a is Inet6Address && !a.isLoopbackAddress && !a.isLinkLocalAddress &&
+                !a.isMulticastAddress && (a.address[0].toInt() and 0xE0) == 0x20
+        }
+        val hasDefaultV6Route = lp.routes.any { r ->
+            r.isDefaultRoute && r.destination.address is Inet6Address
+        }
+        return hasGlobalAddr && hasDefaultV6Route
     }
 
     private fun startObservers() {
@@ -257,29 +375,32 @@ class AdwardenVpnService : VpnService() {
         }
     }
 
-    private fun establishTunnel(): ParcelFileDescriptor? {
+    /**
+     * Build the TUN. IPv4 is always advertised; IPv6 is added only when
+     * [includeIpv6] is true — i.e. only when the underlay has working global v6
+     * ([networkHasGlobalV6]).
+     *
+     * Why gate v6: advertising a v6 address/route makes apps do AAAA lookups and
+     * prefer IPv6 (Happy Eyeballs), pushing v6 flows into the tunnel. When the
+     * underlay has no working v6 (common on mobile data and many Wi-Fi nets), our
+     * protect()ed upstream v6 sockets can't connect (ENETUNREACH) and every
+     * v6-preferred connection stalls into a SYN-retry storm. So we advertise v6
+     * only when the underlay carries it and re-establish the moment that flips
+     * ([reconcileV6]). With v6 off, apps use IPv4, which egresses fine.
+     */
+    private fun establishTunnel(includeIpv6: Boolean): ParcelFileDescriptor? {
         return try {
             val builder = Builder()
                 .setSession("Adwarden")
                 .setMtu(MTU)
                 .addAddress("10.215.173.2", 32)
-                // IPv4-only tunnel: we deliberately do NOT advertise an IPv6
-                // address/route/resolver. If we did, apps would do AAAA lookups
-                // and prefer IPv6 (Happy Eyeballs), pushing IPv6 flows into the
-                // tunnel — but the device underlay frequently has no working IPv6
-                // (mobile data, many Wi-Fi networks), so our protect()ed upstream
-                // IPv6 sockets can't connect (ENOTCONN/ENETUNREACH). That killed
-                // every IPv6-preferred connection and triggered a SYN-retry storm.
-                // Staying IPv4-only makes apps use IPv4, which egresses fine.
-                // Trade-off: on networks with native IPv6, that traffic goes
-                // direct and unfiltered — acceptable until IPv6 egress is handled.
-                //
                 // Advertise a tunnel-local placeholder resolver (the gateway), NOT
                 // a real public DoH provider like 1.1.1.1 — otherwise Chrome's
                 // "Automatic" secure DNS recognizes the provider and upgrades to
                 // DoH, bypassing our filtering. The core intercepts these
                 // plaintext queries and forwards them to the real upstream
-                // (config "dns_servers").
+                // (config "dns_servers"). A v4 resolver serves AAAA records fine,
+                // so no v6 resolver is needed even when v6 egress is on.
                 .addDnsServer(DNS_PLACEHOLDER_V4)
                 // Let VPN-aware apps explicitly bind to other networks; an
                 // ad-blocker shouldn't be a captive tunnel.
@@ -288,6 +409,14 @@ class AdwardenVpnService : VpnService() {
             // LAN traffic (router UI, printers, NAS, casting) keeps flowing
             // direct — the same default NetGuard and RethinkDNS ship.
             addRoutesExceptLan(builder)
+            if (includeIpv6) {
+                // App-side v6 address, peer of the core gateway fd00:aced:1::1 in
+                // the same /64. Route only global-unicast v6 (2000::/3) into the
+                // tunnel; link-local/ULA/multicast stay direct (the v6 analog of
+                // the RFC1918 carve-out).
+                builder.addAddress(V6_TUN_ADDR, 128)
+                builder.addRoute("2000::", 3)
+            }
             // Never tunnel ourselves — avoids a capture feedback loop.
             runCatching { builder.addDisallowedApplication(packageName) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
@@ -352,6 +481,7 @@ class AdwardenVpnService : VpnService() {
 
     private fun stopEverything() {
         running = false
+        tunnelHasV6 = false
         unregisterUnderlyingNetworkTracking()
         serviceScope?.cancel()
         serviceScope = null
@@ -389,6 +519,10 @@ class AdwardenVpnService : VpnService() {
 
         // Tunnel-local placeholder resolver advertised to apps (the gateway).
         private const val DNS_PLACEHOLDER_V4 = "10.215.173.1"
+
+        // App-side IPv6 tunnel address; peer of the core's gateway fd00:aced:1::1
+        // (same /64), advertised only when v6 egress is enabled.
+        private const val V6_TUN_ADDR = "fd00:aced:1::2"
 
         // Blocks kept OFF the tunnel: the RFC1918 private LAN ranges plus
         // multicast/reserved (224/3). DNS_PLACEHOLDER_V4 lives inside 10/8 and is
