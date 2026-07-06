@@ -1,0 +1,10 @@
+[package]
+name = "adwarden-tls"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rustls.workspace = true
+rcgen.workspace = true
+log.workspace = true

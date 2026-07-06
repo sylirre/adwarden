@@ -9,7 +9,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::collections::HashMap;
 
 use jni::objects::{JByteArray, JClass, JIntArray, JObject, JObjectArray, JString};
-use jni::sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jint, jlong, jobjectArray, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
 use adwarden_filter::{FilterEngine, ListFormat};
@@ -29,7 +29,8 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 }
 
 /// Bumped whenever the Kotlin<->Rust FFI contract changes shape.
-pub const ABI_VERSION: i32 = 1;
+/// v2: added `nativeGenerateCa` for TLS interception (P2).
+pub const ABI_VERSION: i32 = 2;
 
 #[no_mangle]
 pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
@@ -37,6 +38,32 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
     _class: JClass,
 ) -> jint {
     ABI_VERSION
+}
+
+/// Generate a fresh TLS-interception root CA. Returns a `String[2]` of
+/// `[certPem, keyPem]`, or null on failure. Called once on first run (P2); Kotlin
+/// persists the key app-privately and exports the cert for the install wizard.
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeGenerateCa<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jobjectArray {
+    let result = catch_unwind(AssertUnwindSafe(|| generate_ca(&mut env)));
+    match result {
+        Ok(Some(arr)) => arr,
+        _ => std::ptr::null_mut(),
+    }
+}
+
+fn generate_ca(env: &mut JNIEnv) -> Option<jobjectArray> {
+    let ca = adwarden_tls::CertAuthority::generate().ok()?;
+    let cert = env.new_string(ca.ca_cert_pem()).ok()?;
+    let key = env.new_string(ca.ca_key_pem()).ok()?;
+    let class = env.find_class("java/lang/String").ok()?;
+    let arr = env.new_object_array(2, &class, JObject::null()).ok()?;
+    env.set_object_array_element(&arr, 0, &cert).ok()?;
+    env.set_object_array_element(&arr, 1, &key).ok()?;
+    Some(arr.into_raw())
 }
 
 #[no_mangle]

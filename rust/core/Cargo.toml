@@ -20,6 +20,7 @@ adwarden-netstack = { path = "../netstack" }
 adwarden-dns = { path = "../dns" }
 adwarden-filter = { path = "../filter" }
 adwarden-pcap = { path = "../pcap" }
+adwarden-tls = { path = "../tls" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger.workspace = true

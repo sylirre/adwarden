@@ -25,6 +25,13 @@ object NativeCore {
 
     external fun nativeAbiVersion(): Int
 
+    /**
+     * Generate a fresh TLS-interception root CA (P2). Returns `[certPem, keyPem]`,
+     * or null on failure. Called once on first run; the caller persists the key
+     * app-privately and exports the cert for the CA-install wizard.
+     */
+    external fun nativeGenerateCa(): Array<String>?
+
     /** Hand the TUN fd + config JSON to the core. Returns an opaque handle (0 = failure). */
     external fun nativeStart(tunFd: Int, configJson: String, bridge: NativeBridge): Long
 
