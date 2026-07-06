@@ -21,6 +21,7 @@ android {
         versionCode = 1
         versionName = "0.1.0-p1"
         vectorDrawables { useSupportLibrary = true }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ksp {
             // Persist Room schemas so migrations can be diffed in review.
@@ -136,4 +137,10 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
+
+    // Instrumented tests (device gates: VPN lifecycle, UID attribution, native core)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
