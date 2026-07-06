@@ -22,15 +22,20 @@ use adwarden_filter::FilterEngine;
 use adwarden_pcap::PcapWriter;
 use adwarden_netstack::packet::L4;
 use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable, NetStack};
+use adwarden_tls::{MitmConfigs, TlsMitm};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::event::{Batcher, Event};
 
 const DOT_PORT: u16 = 853;
+const HTTPS_PORT: u16 = 443;
 const PROTO_TCP: i32 = 6;
 const PROTO_UDP: i32 = 17;
 const VERDICT_CACHE_CAP: usize = 4096;
+/// Backpressure cap: stop reading a MITM'd upstream while this many decrypted
+/// bytes are still queued for the (slow) app side.
+const MITM_APP_BUF_CAP: usize = 256 * 1024;
 
 /// Current default network transport, matching Kotlin's NetworkStateMonitor.
 pub const TRANSPORT_OTHER: u8 = 0;
@@ -64,8 +69,16 @@ struct TcpUpstream {
     stream: TcpStream,
     token: Token,
     connecting: bool,
+    /// Raw bytes queued for the upstream socket. For a MITM'd flow these are the
+    /// client session's TLS records; otherwise the app's bytes verbatim.
     to_upstream: Vec<u8>,
     write_closed: bool,
+    /// Present when this flow is being TLS-intercepted. When set, app bytes are
+    /// fed through the splice instead of relayed raw.
+    mitm: Option<TlsMitm>,
+    /// Staging for MITM-produced TLS records bound for the app, drained into the
+    /// smoltcp socket as its send window allows.
+    to_app: Vec<u8>,
 }
 
 struct UdpSession {
@@ -89,6 +102,7 @@ pub struct ForwarderStats {
     pub out_written: u64,
     pub uid_lookups: u64,
     pub blocked: u64,
+    pub mitm_new: u64,
 }
 
 pub struct Forwarder {
@@ -108,6 +122,8 @@ pub struct Forwarder {
     pcap: Option<PcapWriter<File>>,
     dns_upstream_v4: IpAddr,
     dns_upstream_v6: IpAddr,
+    /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
+    tls: Option<MitmConfigs>,
     stats: ForwarderStats,
 }
 
@@ -142,6 +158,7 @@ impl Forwarder {
             pcap: None,
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
+            tls: build_tls_factory(config),
             stats: ForwarderStats::default(),
         }
     }
@@ -366,17 +383,31 @@ impl Forwarder {
         // App -> upstream for each active flow.
         for id in self.stack.active_flows() {
             let data = self.stack.tcp_take_app_data(id);
-            if !data.is_empty() {
+            let is_mitm = self.tcp.get(&id).map_or(false, |up| up.mitm.is_some());
+            if is_mitm {
+                if !data.is_empty() {
+                    if let Some(up) = self.tcp.get_mut(&id) {
+                        if let Some(mitm) = up.mitm.as_mut() {
+                            mitm.recv_from_app(&data);
+                        }
+                    }
+                }
+                // Always drive: handshakes and buffered plaintext make progress
+                // even when the app sent nothing this pass.
+                self.drive_mitm(id);
+            } else if !data.is_empty() {
                 if let Some(up) = self.tcp.get_mut(&id) {
                     up.to_upstream.extend_from_slice(&data);
                 }
             }
             self.flush_to_upstream(id);
+            self.flush_to_app(id);
             // Propagate the app's half-close once its data is drained — but
             // never while the upstream connect is still in flight: shutdown()
             // on a SYN_SENT socket is tcp_disconnect() in the kernel and
             // latches ECONNRESET. The check re-runs every service pass, so the
-            // FIN propagates as soon as the connect completes.
+            // FIN propagates as soon as the connect completes. For a MITM'd flow
+            // the splice's close_notify already sits in `to_upstream`.
             if self.stack.tcp_app_finished(id) {
                 if let Some(up) = self.tcp.get_mut(&id) {
                     if up.to_upstream.is_empty() && !up.write_closed && !up.connecting {
@@ -421,11 +452,24 @@ impl Forwarder {
                     }
                     self.flush_to_upstream(id);
                 }
+                let is_mitm = self.tcp.get(&id).map_or(false, |up| up.mitm.is_some());
                 if event.is_readable() {
-                    self.pump_upstream_to_app(id);
+                    if is_mitm {
+                        self.read_upstream_into_mitm(id);
+                        self.drive_mitm(id);
+                        self.flush_to_app(id);
+                    } else {
+                        self.pump_upstream_to_app(id);
+                    }
                 }
                 if event.is_read_closed() || event.is_write_closed() {
-                    self.pump_upstream_to_app(id);
+                    if is_mitm {
+                        self.read_upstream_into_mitm(id);
+                        self.drive_mitm(id);
+                        self.flush_to_app(id);
+                    } else {
+                        self.pump_upstream_to_app(id);
+                    }
                     self.stack.tcp_close_app(id);
                 }
             }
@@ -444,15 +488,43 @@ impl Forwarder {
             Some((stream, token)) => {
                 self.stats.tcp_new += 1;
                 self.routes.insert(token, Route::Tcp(id));
+                let mitm = self.new_mitm_if_intercepting(server);
                 self.tcp.insert(
                     id,
-                    TcpUpstream { stream, token, connecting: true, to_upstream: Vec::new(), write_closed: false },
+                    TcpUpstream {
+                        stream,
+                        token,
+                        connecting: true,
+                        to_upstream: Vec::new(),
+                        write_closed: false,
+                        mitm,
+                        to_app: Vec::new(),
+                    },
                 );
             }
             None => {
                 // Couldn't reach upstream: RST the app so it fails fast.
                 self.stats.connect_fail += 1;
                 self.stack.tcp_abort(id);
+            }
+        }
+    }
+
+    /// Start a TLS interception splice for this flow if interception is on and
+    /// the destination is HTTPS. Returns `None` (raw relay) otherwise.
+    fn new_mitm_if_intercepting(&mut self, server: SocketAddr) -> Option<TlsMitm> {
+        if server.port() != HTTPS_PORT {
+            return None;
+        }
+        let splice = self.tls.as_ref()?.new_splice();
+        match splice {
+            Ok(mitm) => {
+                self.stats.mitm_new += 1;
+                Some(mitm)
+            }
+            Err(e) => {
+                crate::alog!("TlsMitm::new failed ({e}); relaying {} raw", server);
+                None
             }
         }
     }
@@ -503,6 +575,80 @@ impl Forwarder {
         }
         if written > 0 {
             up.to_upstream.drain(..written);
+        }
+    }
+
+    // --- TLS interception (MITM) -----------------------------------------
+
+    /// Advance a flow's TLS splice: pump it, queue the produced TLS records
+    /// toward each peer, and on completion/failure tear the flow down.
+    fn drive_mitm(&mut self, id: FlowId) {
+        let io = match self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
+            Some(mitm) => mitm.pump(),
+            None => return,
+        };
+        if let Some(up) = self.tcp.get_mut(&id) {
+            up.to_upstream.extend_from_slice(&io.to_upstream);
+            up.to_app.extend_from_slice(&io.to_app);
+        }
+        if io.closed {
+            // Flush whatever the splice produced, then close both directions.
+            self.flush_to_upstream(id);
+            self.flush_to_app(id);
+            self.stack.tcp_close_app(id);
+            if let Some(up) = self.tcp.get_mut(&id) {
+                if !up.write_closed && !up.connecting {
+                    let _ = up.stream.shutdown(std::net::Shutdown::Write);
+                    up.write_closed = true;
+                }
+            }
+        }
+    }
+
+    /// Drain the MITM staging buffer into the smoltcp socket as its send window
+    /// allows (mirrors [`Self::pump_upstream_to_app`]'s backpressure, but for
+    /// bytes the splice already produced).
+    fn flush_to_app(&mut self, id: FlowId) {
+        loop {
+            let space = self.stack.tcp_send_space(id);
+            if space == 0 {
+                return;
+            }
+            let chunk = match self.tcp.get_mut(&id) {
+                Some(up) if !up.to_app.is_empty() => {
+                    let n = space.min(up.to_app.len());
+                    up.to_app.drain(..n).collect::<Vec<u8>>()
+                }
+                _ => return,
+            };
+            self.stack.tcp_send_to_app(id, &chunk);
+        }
+    }
+
+    /// Read raw TLS bytes off the upstream socket and feed them into the splice,
+    /// pausing while the app-bound buffer is backed up.
+    fn read_upstream_into_mitm(&mut self, id: FlowId) {
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            let backed_up = self
+                .tcp
+                .get(&id)
+                .map_or(true, |up| up.to_app.len() > MITM_APP_BUF_CAP);
+            if backed_up {
+                break;
+            }
+            let Some(up) = self.tcp.get_mut(&id) else { break };
+            match up.stream.read(&mut buf) {
+                Ok(0) => break, // upstream EOF; the read-closed path closes the app side
+                Ok(n) => {
+                    self.stats.upstream_reply += 1;
+                    if let Some(mitm) = up.mitm.as_mut() {
+                        mitm.recv_from_upstream(&buf[..n]);
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
         }
     }
 
@@ -636,6 +782,29 @@ impl Forwarder {
                 let _ = self.registry.deregister(&mut session.socket);
                 self.routes.remove(&session.token);
             }
+        }
+    }
+}
+
+/// Build the shared rustls configs for TLS interception, or `None` when it's
+/// disabled or the CA is missing/unloadable (interception then simply doesn't
+/// engage — flows relay raw as before).
+fn build_tls_factory(config: &Config) -> Option<MitmConfigs> {
+    if !config.intercept_tls {
+        return None;
+    }
+    let (Some(cert), Some(key)) = (config.ca_cert_pem.as_ref(), config.ca_key_pem.as_ref()) else {
+        crate::alog!("intercept_tls set but CA PEM missing; interception disabled");
+        return None;
+    };
+    match MitmConfigs::build(cert, key) {
+        Ok(factory) => {
+            crate::alog!("TLS interception enabled");
+            Some(factory)
+        }
+        Err(e) => {
+            crate::alog!("TLS interception disabled ({e})");
+            None
         }
     }
 }

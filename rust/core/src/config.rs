@@ -17,11 +17,27 @@ pub struct Config {
     pub dns_servers: Vec<String>,
     #[serde(default)]
     pub block_encrypted_dns: bool,
+    /// TLS interception (P2): terminate & re-originate HTTPS so the datapath
+    /// sees cleartext. Requires the CA PEMs below; a start-time setting.
+    #[serde(default)]
+    pub intercept_tls: bool,
+    /// The interception root CA, PEM-encoded. `ca_key_pem` is app-private.
+    #[serde(default)]
+    pub ca_cert_pem: Option<String>,
+    #[serde(default)]
+    pub ca_key_pem: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { mtu: default_mtu(), dns_servers: Vec::new(), block_encrypted_dns: false }
+        Config {
+            mtu: default_mtu(),
+            dns_servers: Vec::new(),
+            block_encrypted_dns: false,
+            intercept_tls: false,
+            ca_cert_pem: None,
+            ca_key_pem: None,
+        }
     }
 }
 

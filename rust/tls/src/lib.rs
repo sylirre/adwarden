@@ -49,6 +49,32 @@ pub fn upstream_client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Err
     Ok(Arc::new(config))
 }
 
+/// The rustls configs needed to intercept flows, bundled so callers (the native
+/// core) don't depend on rustls directly. Build once per session from the CA
+/// PEMs; cheap to mint a per-flow splice from.
+pub struct MitmConfigs {
+    server_config: Arc<rustls::ServerConfig>,
+    client_config: Arc<rustls::ClientConfig>,
+}
+
+impl MitmConfigs {
+    /// Load the CA from PEM and build the server (leaf-minting) and client
+    /// (upstream-verifying) configs. Errors are human-readable for logging.
+    pub fn build(ca_cert_pem: &str, ca_key_pem: &str) -> Result<Self, String> {
+        let ca = Arc::new(
+            CertAuthority::from_pem(ca_cert_pem, ca_key_pem).map_err(|e| format!("CA load: {e}"))?,
+        );
+        let server_config = ca.server_config().map_err(|e| format!("server config: {e}"))?;
+        let client_config = upstream_client_config().map_err(|e| format!("client config: {e}"))?;
+        Ok(MitmConfigs { server_config, client_config })
+    }
+
+    /// Start a fresh interception splice for one flow.
+    pub fn new_splice(&self) -> Result<TlsMitm, rustls::Error> {
+        TlsMitm::new(self.server_config.clone(), self.client_config.clone())
+    }
+}
+
 /// Distinguished-name fields for the root CA. Kept fixed so that a CA restored
 /// from a persisted key reconstructs an identical issuer identity (same subject
 /// DN, and — since rcgen derives the key id from the key via `KeyIdMethod::Sha256`

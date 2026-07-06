@@ -181,9 +181,10 @@ fn run_loop(
             let (tcp_flows, udp_flows) = forwarder.flow_counts();
             crate::alog!(
                 "hb tun_in={} tcp_new={} udp_new={} protect_ok={} protect_fail={} connect_fail={} \
-                 reply={} out={} uid_lookups={} blocked={} flows(tcp={},udp={})",
+                 reply={} out={} uid_lookups={} blocked={} mitm={} flows(tcp={},udp={})",
                 s.tun_in, s.tcp_new, s.udp_new, s.protect_ok, s.protect_fail, s.connect_fail,
-                s.upstream_reply, s.out_written, s.uid_lookups, s.blocked, tcp_flows, udp_flows,
+                s.upstream_reply, s.out_written, s.uid_lookups, s.blocked, s.mitm_new,
+                tcp_flows, udp_flows,
             );
             last_heartbeat = Instant::now();
         }
