@@ -30,6 +30,25 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
+mod mitm;
+pub use mitm::{MitmIo, TlsMitm};
+
+/// Build the rustls client config used to re-originate intercepted flows to the
+/// real upstream, verifying the server against the bundled Mozilla root store
+/// (webpki-roots). Sites rooted outside that set won't be decryptable — an
+/// accepted limitation surfaced in the metadata-only fallback UX.
+pub fn upstream_client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
 /// Distinguished-name fields for the root CA. Kept fixed so that a CA restored
 /// from a persisted key reconstructs an identical issuer identity (same subject
 /// DN, and — since rcgen derives the key id from the key via `KeyIdMethod::Sha256`

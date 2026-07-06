@@ -7,4 +7,5 @@ publish.workspace = true
 [dependencies]
 rustls.workspace = true
 rcgen.workspace = true
+webpki-roots.workspace = true
 log.workspace = true
