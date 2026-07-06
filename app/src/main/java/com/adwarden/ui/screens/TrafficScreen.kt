@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DataObject
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Stop
@@ -62,6 +63,10 @@ fun TrafficScreen(
         ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri -> uri?.let(pcapViewModel::startCapture) }
 
+    val exportHar = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri -> uri?.let(pcapViewModel::exportHar) }
+
     val filtered = remember(events, query) {
         if (query.isBlank()) events
         else events.filter {
@@ -87,6 +92,10 @@ fun TrafficScreen(
                 modifier = Modifier.weight(1f),
             )
             if (running) {
+                TextButton(onClick = { exportHar.launch(pcapViewModel.defaultHarFileName()) }) {
+                    Icon(Icons.Rounded.DataObject, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  HAR")
+                }
                 CaptureAction(
                     capturing = capturing,
                     onStart = { createDocument.launch(pcapViewModel.defaultFileName()) },

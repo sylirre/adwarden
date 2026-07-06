@@ -30,7 +30,8 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 
 /// Bumped whenever the Kotlin<->Rust FFI contract changes shape.
 /// v2: added `nativeGenerateCa` for TLS interception (P2).
-pub const ABI_VERSION: i32 = 2;
+/// v3: added `nativeExportHar` for HAR 1.2 export of decrypted flows (P2-3).
+pub const ABI_VERSION: i32 = 3;
 
 #[no_mangle]
 pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
@@ -241,6 +242,30 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStopPcap(
             session.send(Command::StopPcap);
         }
     }));
+}
+
+/// Export the decrypted HTTP transactions captured so far as a HAR 1.2 file to
+/// an owned fd (P2-3). Returns true if the session accepted the request; the
+/// write happens asynchronously on the datapath thread, which closes the fd.
+#[no_mangle]
+pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeExportHar(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    fd: jint,
+) -> jboolean {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(session) = unsafe { session(handle) } {
+            session.send(Command::ExportHar { fd: fd as std::os::fd::RawFd });
+            true
+        } else {
+            false
+        }
+    }));
+    match result {
+        Ok(true) => JNI_TRUE,
+        _ => JNI_FALSE,
+    }
 }
 
 /// Compile a filter engine from downloaded list files + custom rules and write

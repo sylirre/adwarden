@@ -3,6 +3,7 @@ package com.adwarden.ui.screens
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.adwarden.capture.HarExportManager
 import com.adwarden.capture.PcapSessionManager
 import com.adwarden.core.NativeSessionHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -15,6 +16,7 @@ import javax.inject.Inject
 @HiltViewModel
 class TrafficViewModel @Inject constructor(
     private val pcap: PcapSessionManager,
+    private val har: HarExportManager,
     sessionHolder: NativeSessionHolder,
 ) : ViewModel() {
 
@@ -32,5 +34,11 @@ class TrafficViewModel @Inject constructor(
 
     fun stopCapture() {
         pcap.stop()
+    }
+
+    fun defaultHarFileName(): String = har.defaultFileName()
+
+    fun exportHar(target: Uri) {
+        har.export(target)
     }
 }

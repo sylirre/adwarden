@@ -42,6 +42,8 @@ pub enum Command {
     StartPcap { fd: RawFd, ring_bytes: u64 },
     /// Stop and close the active capture.
     StopPcap,
+    /// Write the decrypted HTTP transactions as HAR 1.2 to an owned fd (P2-3).
+    ExportHar { fd: RawFd },
 }
 
 pub struct Session {
@@ -181,10 +183,10 @@ fn run_loop(
             let (tcp_flows, udp_flows) = forwarder.flow_counts();
             crate::alog!(
                 "hb tun_in={} tcp_new={} udp_new={} protect_ok={} protect_fail={} connect_fail={} \
-                 reply={} out={} uid_lookups={} blocked={} mitm={} flows(tcp={},udp={})",
+                 reply={} out={} uid_lookups={} blocked={} mitm={} har={} flows(tcp={},udp={})",
                 s.tun_in, s.tcp_new, s.udp_new, s.protect_ok, s.protect_fail, s.connect_fail,
                 s.upstream_reply, s.out_written, s.uid_lookups, s.blocked, s.mitm_new,
-                tcp_flows, udp_flows,
+                forwarder.har_len(), tcp_flows, udp_flows,
             );
             last_heartbeat = Instant::now();
         }
@@ -210,6 +212,7 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::SetTransport(transport) => forwarder.set_transport(transport),
             Command::StartPcap { fd, ring_bytes } => forwarder.start_pcap(fd, ring_bytes),
             Command::StopPcap => forwarder.stop_pcap(),
+            Command::ExportHar { fd } => forwarder.export_har(fd),
         }
     }
 }

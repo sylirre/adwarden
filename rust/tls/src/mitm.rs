@@ -24,6 +24,8 @@ use std::sync::Arc;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 
+use crate::har::{HttpTap, HttpTransaction};
+
 /// One pump's worth of output: TLS bytes to write toward each peer, plus a
 /// flag telling the caller to tear the flow down.
 #[derive(Default)]
@@ -47,6 +49,8 @@ pub struct TlsMitm {
     app_closed: bool,
     upstream_closed: bool,
     failed: bool,
+    /// Observes the decrypted plaintext both ways and yields HAR transactions.
+    tap: HttpTap,
 }
 
 impl TlsMitm {
@@ -65,12 +69,18 @@ impl TlsMitm {
             app_closed: false,
             upstream_closed: false,
             failed: false,
+            tap: HttpTap::new(),
         })
     }
 
     /// The intercepted SNI host, once the ClientHello has been parsed.
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
+    }
+
+    /// Drain the HTTP transactions decrypted so far (for HAR export, P2-3).
+    pub fn take_transactions(&mut self) -> Vec<HttpTransaction> {
+        self.tap.take_transactions()
     }
 
     /// Feed TLS bytes just received from the app (smoltcp side).
@@ -124,6 +134,7 @@ impl TlsMitm {
         if self.client.is_none() {
             if let Some(name) = self.server.server_name() {
                 self.host = Some(name.to_string());
+                self.tap.set_host(name);
                 let Ok(sni) = ServerName::try_from(name.to_string()) else {
                     return self.fail();
                 };
@@ -173,7 +184,17 @@ impl TlsMitm {
         }
 
         io.closed = self.failed || (self.app_closed && self.upstream_closed);
+        if io.closed {
+            // Flush a response whose body was delimited by connection close.
+            self.tap.finish();
+        }
         io
+    }
+
+    /// Finalize HTTP capture when the flow is torn down out-of-band (e.g. the app
+    /// resets before a clean close). Idempotent; safe to call before draining.
+    pub fn finish(&mut self) {
+        self.tap.finish();
     }
 
     /// Move decrypted bytes app->upstream and upstream->app. rustls buffers on
@@ -181,22 +202,24 @@ impl TlsMitm {
     fn cross_plaintext(&mut self) {
         let Some(client) = self.client.as_mut() else { return };
         let mut buf = [0u8; 16 * 1024];
-        // app -> upstream
+        // app -> upstream (the HTTP request stream)
         loop {
             match self.server.reader().read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    self.tap.feed_request(&buf[..n]);
                     let _ = client.writer().write_all(&buf[..n]);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
             }
         }
-        // upstream -> app
+        // upstream -> app (the HTTP response stream)
         loop {
             match client.reader().read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    self.tap.feed_response(&buf[..n]);
                     let _ = self.server.writer().write_all(&buf[..n]);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -316,5 +339,13 @@ mod tests {
             resp.windows(8).any(|w| w == b"HTTP/1.1"),
             "app should receive the upstream's cleartext response, got {resp:?}"
         );
+
+        // The HAR tap should have decrypted and paired the transaction.
+        let txns = mitm.take_transactions();
+        assert_eq!(txns.len(), 1, "one request/response captured");
+        assert_eq!(txns[0].request.method, "GET");
+        assert_eq!(txns[0].response.status, 200);
+        assert_eq!(txns[0].response.body, b"hi");
+        assert_eq!(txns[0].host.as_deref(), Some(HOST));
     }
 }

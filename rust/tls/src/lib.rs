@@ -30,7 +30,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
+mod har;
 mod mitm;
+pub use har::{write_har, HttpTransaction};
 pub use mitm::{MitmIo, TlsMitm};
 
 /// Build the rustls client config used to re-originate intercepted flows to the

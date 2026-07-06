@@ -22,7 +22,7 @@ use adwarden_filter::FilterEngine;
 use adwarden_pcap::PcapWriter;
 use adwarden_netstack::packet::L4;
 use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable, NetStack};
-use adwarden_tls::{MitmConfigs, TlsMitm};
+use adwarden_tls::{write_har, HttpTransaction, MitmConfigs, TlsMitm};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
@@ -36,6 +36,9 @@ const VERDICT_CACHE_CAP: usize = 4096;
 /// Backpressure cap: stop reading a MITM'd upstream while this many decrypted
 /// bytes are still queued for the (slow) app side.
 const MITM_APP_BUF_CAP: usize = 256 * 1024;
+/// Bound on decrypted HTTP transactions retained for HAR export (P2-3). Oldest
+/// are dropped past this so a long session can't grow memory without limit.
+const HAR_MAX_ENTRIES: usize = 5_000;
 
 /// Current default network transport, matching Kotlin's NetworkStateMonitor.
 pub const TRANSPORT_OTHER: u8 = 0;
@@ -127,6 +130,8 @@ pub struct Forwarder {
     dns_upstream_v6: IpAddr,
     /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
     tls: Option<MitmConfigs>,
+    /// Decrypted HTTP transactions captured this session, drained on HAR export.
+    har: Vec<HttpTransaction>,
     stats: ForwarderStats,
 }
 
@@ -162,6 +167,7 @@ impl Forwarder {
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
             tls: build_tls_factory(config),
+            har: Vec::new(),
             stats: ForwarderStats::default(),
         }
     }
@@ -186,6 +192,23 @@ impl Forwarder {
     /// Stop the capture and close its file.
     pub fn stop_pcap(&mut self) {
         self.pcap = None;
+    }
+
+    /// Write the decrypted HTTP transactions captured so far as a HAR 1.2 file to
+    /// `fd` (owned henceforth, closed when written). The buffer is retained, so a
+    /// later export includes this session's full history. Runs on the datapath
+    /// thread, so it briefly pauses forwarding — acceptable, like pcap I/O.
+    pub fn export_har(&self, fd: RawFd) {
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        if let Err(e) = write_har(&mut file, &self.har) {
+            crate::alog!("HAR export failed: {e}");
+        }
+        // `file` drops here, closing the fd.
+    }
+
+    /// Number of HAR transactions buffered (for the heartbeat log).
+    pub fn har_len(&self) -> usize {
+        self.har.len()
     }
 
     /// Write a packet to the capture, if one is active.
@@ -601,6 +624,7 @@ impl Forwarder {
             up.to_upstream.extend_from_slice(&io.to_upstream);
             up.to_app.extend_from_slice(&io.to_app);
         }
+        self.drain_mitm_transactions(id);
         if io.closed {
             // Flush whatever the splice produced, then close both directions.
             self.flush_to_upstream(id);
@@ -612,6 +636,21 @@ impl Forwarder {
                     up.write_closed = true;
                 }
             }
+        }
+    }
+
+    /// Pull any HTTP transactions the splice has decrypted into the session HAR
+    /// buffer, dropping the oldest past [`HAR_MAX_ENTRIES`].
+    fn drain_mitm_transactions(&mut self, id: FlowId) {
+        let txns = match self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
+            Some(mitm) => mitm.take_transactions(),
+            None => return,
+        };
+        for txn in txns {
+            if self.har.len() >= HAR_MAX_ENTRIES {
+                self.har.remove(0);
+            }
+            self.har.push(txn);
         }
     }
 
@@ -690,6 +729,14 @@ impl Forwarder {
     }
 
     fn teardown_tcp(&mut self, id: FlowId) {
+        // Flush any final transaction (e.g. a connection-close-delimited response)
+        // before the splice is dropped.
+        if let Some(up) = self.tcp.get_mut(&id) {
+            if let Some(mitm) = up.mitm.as_mut() {
+                mitm.finish();
+            }
+        }
+        self.drain_mitm_transactions(id);
         if let Some(mut up) = self.tcp.remove(&id) {
             let _ = self.registry.deregister(&mut up.stream);
             self.routes.remove(&up.token);

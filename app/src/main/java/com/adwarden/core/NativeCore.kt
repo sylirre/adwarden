@@ -67,4 +67,11 @@ object NativeCore {
 
     /** Stop the active capture and close its file. */
     external fun nativeStopPcap(handle: Long)
+
+    /**
+     * Export the decrypted HTTP transactions captured so far as a HAR 1.2 file to
+     * an owned fd (P2-3). Returns true if accepted; the write happens on the
+     * datapath thread, which owns and closes the fd.
+     */
+    external fun nativeExportHar(handle: Long, fd: Int): Boolean
 }

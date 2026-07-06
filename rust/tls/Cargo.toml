@@ -9,3 +9,6 @@ rustls.workspace = true
 rcgen.workspace = true
 webpki-roots.workspace = true
 log.workspace = true
+# HAR 1.2 capture/serialization (P2-3). serde_json is already built for `core`.
+serde.workspace = true
+serde_json.workspace = true

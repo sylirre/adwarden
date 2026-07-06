@@ -96,6 +96,8 @@ dependencies = [
  "log",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
  "webpki-roots 0.26.11",
 ]
 
