@@ -1,6 +1,7 @@
 package com.adwarden.work
 
 import android.content.Context
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -29,7 +30,9 @@ class FilterSyncWorker @AssistedInject constructor(
         repository.ensureSeeded()
         val subscriptions = repository.subscriptionsOnce().filter { it.enabled }
         for (subscription in subscriptions) {
-            runCatching { syncOne(subscription) }
+            runCatching { syncOne(subscription) }.onFailure { error ->
+                Log.w(TAG, "sync failed for ${subscription.id}", error)
+            }
         }
         // Recompile even when every list 304s, so enable/disable and custom-rule
         // edits take effect.
@@ -58,6 +61,9 @@ class FilterSyncWorker @AssistedInject constructor(
                         ruleCount = countRules(body),
                     )
                 }
+                // Leave the previous download (if any) in place, but say why the
+                // list is stale — a silent 403 here cost a day of head-scratching.
+                else -> Log.w(TAG, "sync ${subscription.id}: HTTP ${response.code} from ${subscription.url}")
             }
         }
     }
@@ -71,4 +77,8 @@ class FilterSyncWorker @AssistedInject constructor(
                 !trimmed.startsWith("#") &&
                 !trimmed.startsWith("[")
         }
+
+    private companion object {
+        const val TAG = "Adwarden"
+    }
 }

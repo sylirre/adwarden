@@ -58,6 +58,11 @@ class FilterRepository @Inject constructor(
         if (filterDao.subscriptionCount() == 0) {
             filterDao.upsertSubscriptions(DEFAULT_SUBSCRIPTIONS)
         }
+        // Repoint already-seeded rows whose default URL we have since replaced.
+        // User state on the row (enabled, sync meta) is otherwise preserved.
+        SUPERSEDED_URLS.forEach { (id, urls) ->
+            filterDao.migrateUrl(id, oldUrl = urls.first, newUrl = urls.second)
+        }
     }
 
     suspend fun setSubscriptionEnabled(id: String, enabled: Boolean) {
@@ -152,7 +157,7 @@ class FilterRepository @Inject constructor(
             FilterSubscription(
                 id = "adguard_base",
                 name = "AdGuard Base filter",
-                url = "https://filters.adtidy.org/extension/ublock/filters/2.txt",
+                url = "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_2_Base/filter.txt",
                 format = FilterFormat.ADBLOCK,
                 enabled = true,
                 ruleCount = 78_000,
@@ -176,7 +181,7 @@ class FilterRepository @Inject constructor(
             FilterSubscription(
                 id = "adguard_tracking",
                 name = "AdGuard Tracking Protection",
-                url = "https://filters.adtidy.org/extension/ublock/filters/3.txt",
+                url = "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_3_Spyware/filter.txt",
                 format = FilterFormat.ADBLOCK,
                 enabled = false,
                 ruleCount = 33_000,
@@ -188,6 +193,20 @@ class FilterRepository @Inject constructor(
                 format = FilterFormat.HOSTS,
                 enabled = true,
                 ruleCount = 130_000,
+            ),
+        )
+
+        // filters.adtidy.org rejects non-browser User-Agents with 403 and
+        // rate-bans probing IPs; AdGuard's FiltersRegistry on GitHub serves the
+        // same compiled lists without games, so seeded rows are repointed.
+        private val SUPERSEDED_URLS = mapOf(
+            "adguard_base" to (
+                "https://filters.adtidy.org/extension/ublock/filters/2.txt" to
+                    "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_2_Base/filter.txt"
+            ),
+            "adguard_tracking" to (
+                "https://filters.adtidy.org/extension/ublock/filters/3.txt" to
+                    "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_3_Spyware/filter.txt"
             ),
         )
     }

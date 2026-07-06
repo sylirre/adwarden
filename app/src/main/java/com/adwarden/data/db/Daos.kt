@@ -28,6 +28,14 @@ interface FilterDao {
     @Query("UPDATE filter_subscription SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
 
+    // Conditional on the old URL so it never clobbers anything but the exact
+    // superseded default; the stale validators are cleared with it.
+    @Query(
+        "UPDATE filter_subscription SET url = :newUrl, etag = NULL, lastModified = NULL " +
+            "WHERE id = :id AND url = :oldUrl",
+    )
+    suspend fun migrateUrl(id: String, oldUrl: String, newUrl: String)
+
     @Query(
         "UPDATE filter_subscription SET etag = :etag, lastModified = :lastModified, " +
             "lastSyncMs = :syncedAt, ruleCount = :ruleCount WHERE id = :id",
