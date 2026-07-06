@@ -1,5 +1,7 @@
 package com.adwarden.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Verified
+import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -34,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,6 +57,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
     val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
     var showCaWizard by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxSize()
@@ -123,6 +128,31 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     Icons.Rounded.Info,
                     "Non-root limits",
                     "Without root, Android only lets us decrypt apps that trust user certificates (e.g. Chrome). Blocking, logging and PCAP still work for every app.",
+                )
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        SectionTitle("System integration")
+        AdwCard(Modifier.fillMaxWidth()) {
+            Column {
+                ActionRow(
+                    icon = Icons.Rounded.VpnKey,
+                    title = "Always-on VPN",
+                    subtitle = "Open Android's VPN settings to keep Adwarden always connected, and optionally block traffic while it's off (lockdown).",
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_VPN_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    },
+                )
+                InfoRow(
+                    Icons.Rounded.Info,
+                    "Quick Settings tile",
+                    "Add the Adwarden tile from the Quick Settings edit panel to toggle protection without opening the app.",
                 )
             }
         }

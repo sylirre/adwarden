@@ -44,6 +44,18 @@
             </intent-filter>
         </service>
 
+        <!-- Quick Settings tile to toggle/reflect protection (P3-5). -->
+        <service
+            android:name=".vpn.AdwardenTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_shield"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- On-demand WorkManager init so Hilt supplies the worker factory. -->
         <provider
             android:name="androidx.startup.InitializationProvider"

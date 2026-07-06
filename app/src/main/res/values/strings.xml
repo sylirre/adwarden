@@ -5,4 +5,7 @@
     <string name="vpn_channel_desc">Shows whether Adwarden is actively filtering and inspecting traffic.</string>
     <string name="vpn_notification_title">Adwarden is active</string>
     <string name="vpn_notification_text">Filtering and forwarding on-device traffic</string>
+    <string name="tile_label">Adwarden</string>
+    <string name="tile_subtitle_on">Protected</string>
+    <string name="tile_subtitle_off">Off</string>
 </resources>

@@ -50,6 +50,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         maybeRequestNotifications()
+        // A fresh launch from the QS tile (consent needed) carries this action.
+        if (savedInstanceState == null) handleTileAction(intent)
 
         setContent {
             val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
@@ -85,6 +87,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleTileAction(intent)
+    }
+
+    /**
+     * The QS tile bounces here when protection can't start without the
+     * `VpnService.prepare()` consent dialog it can't show itself (P3-5). Run the
+     * normal toggle, which drives the consent launcher, then consume the action so
+     * a later recreate can't re-fire it.
+     */
+    private fun handleTileAction(intent: Intent?) {
+        if (intent?.action != ACTION_TOGGLE_PROTECTION) return
+        intent.action = null
+        toggleProtection()
+    }
+
     private fun toggleProtection() {
         if (viewModel.running.value) {
             stopVpn()
@@ -113,5 +133,10 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    companion object {
+        /** Sent by the QS tile when starting protection needs the consent dialog. */
+        const val ACTION_TOGGLE_PROTECTION = "com.adwarden.action.TOGGLE_PROTECTION"
     }
 }

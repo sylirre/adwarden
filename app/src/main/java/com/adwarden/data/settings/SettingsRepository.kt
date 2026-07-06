@@ -24,6 +24,10 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val blockEncryptedDns: Boolean = false,
     val interceptTls: Boolean = false,
+    /** The user's intended protection state, persisted across process death so the
+     *  Quick Settings tile and boot/always-on reasoning know what was asked (P3-5).
+     *  This is intent, not the live running state (that's NativeSessionHolder). */
+    val desiredProtection: Boolean = false,
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -48,6 +52,7 @@ class SettingsRepository @Inject constructor(
                 ?: ThemeMode.SYSTEM,
             blockEncryptedDns = prefs[KEY_BLOCK_ENCRYPTED_DNS] ?: false,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
+            desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
         )
     }
 
@@ -63,11 +68,15 @@ class SettingsRepository @Inject constructor(
     suspend fun setInterceptTls(value: Boolean) =
         store.edit { it[KEY_INTERCEPT_TLS] = value }
 
+    suspend fun setDesiredProtection(value: Boolean) =
+        store.edit { it[KEY_DESIRED_PROTECTION] = value }
+
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
+        val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
     }
 }

@@ -90,9 +90,18 @@ class AdwardenVpnService : VpnService() {
     @Volatile private var tunnelHasV6 = false
     private val v6Mutex = Mutex()
 
+    // Persists the user's desired-protection intent (P3-5). Deliberately NOT tied
+    // to serviceScope or cancelled in onDestroy: the "false" write on an explicit
+    // stop must survive the immediate teardown, or always-on/boot would restart
+    // protection the user just turned off.
+    private val persistScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_STOP -> {
+                // Explicit user stop → clear the desired-protection intent so
+                // always-on/boot doesn't bring it back (P3-5).
+                persistScope.launch { settings.setDesiredProtection(false) }
                 stopEverything()
                 stopSelf()
                 START_NOT_STICKY
@@ -159,6 +168,9 @@ class AdwardenVpnService : VpnService() {
         // them before registering the callback that can trigger a reconcile.
         startObservers()
         registerUnderlyingNetworkTracking()
+        // Record intent + refresh the QS tile now that we're actually up (P3-5).
+        persistScope.launch { settings.setDesiredProtection(true) }
+        AdwardenTileService.requestUpdate(this)
         Log.i(TAG, "Capture started")
     }
 
@@ -537,6 +549,8 @@ class AdwardenVpnService : VpnService() {
         // The core is gone; drop any capture latch so a stale one can't keep the
         // next session out of the fast-path (P3-4).
         pcap.onSessionEnded()
+        // Reflect the stop on the QS tile even when it wasn't the trigger (P3-5).
+        AdwardenTileService.requestUpdate(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -546,6 +560,8 @@ class AdwardenVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // The user revoked us (or switched to another VPN) → clear the intent.
+        persistScope.launch { settings.setDesiredProtection(false) }
         stopEverything()
         stopSelf()
         super.onRevoke()
