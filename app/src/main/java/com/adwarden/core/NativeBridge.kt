@@ -28,7 +28,15 @@ class NativeBridge(
         capture.onEvents(NativeEventCodec.decode(batch))
     }
 
-    /** Protect an upstream socket fd so its traffic bypasses the VPN. */
+    /**
+     * Protect an upstream socket fd so its traffic bypasses the VPN.
+     *
+     * `VpnService.protect()` alone is the whole mechanism: it fwmarks the socket
+     * ("protectedFromVpn", bit 17 / 0x20000) so routing skips the tunnel. We
+     * deliberately do NOT also call `Network.bindSocket()` afterwards — it
+     * rewrites SO_MARK with the network's netId, silently clearing the
+     * protection bit.
+     */
     @Keep
     fun protect(fd: Int): Boolean = protector(fd)
 

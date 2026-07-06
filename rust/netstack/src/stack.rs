@@ -45,7 +45,6 @@ struct FourTuple {
 
 struct TcpFlow {
     handle: SocketHandle,
-    server: SocketAddr,
     tuple: FourTuple,
     closed_notified: bool,
 }
@@ -145,7 +144,7 @@ impl NetStack {
         self.next_id += 1;
         self.flows.insert(
             id,
-            TcpFlow { handle, server: tuple.server, tuple, closed_notified: false },
+            TcpFlow { handle, tuple, closed_notified: false },
         );
         self.by_tuple.insert(tuple, id);
         Some((id, tuple.server))
@@ -208,10 +207,25 @@ impl NetStack {
     }
 
     /// True once the app has closed its sending half (FIN) and we've drained it.
+    ///
+    /// This must be judged from the TCP state, not `may_recv()`: `may_recv()`
+    /// is also false in Listen/SynReceived — i.e. for every freshly accepted
+    /// flow whose handshake ACK hasn't arrived yet — so using it here made every
+    /// new flow look half-closed for one poll iteration. The forwarder then
+    /// called `shutdown()` on an upstream socket still in SYN_SENT, which Linux
+    /// turns into `tcp_disconnect()` + ECONNRESET, killing every connection.
     pub fn tcp_app_finished(&mut self, id: FlowId) -> bool {
         let Some(flow) = self.flows.get(&id) else { return true };
         let socket = self.sockets.get_mut::<tcp::Socket>(flow.handle);
-        !socket.may_recv() && socket.recv_queue() == 0
+        let peer_sent_fin = matches!(
+            socket.state(),
+            tcp::State::CloseWait
+                | tcp::State::LastAck
+                | tcp::State::Closing
+                | tcp::State::TimeWait
+                | tcp::State::Closed
+        );
+        peer_sent_fin && socket.recv_queue() == 0
     }
 
     /// Close our side toward the app (send FIN) — upstream reached EOF.
@@ -234,10 +248,6 @@ impl NetStack {
             self.sockets.remove(flow.handle);
             self.by_tuple.remove(&flow.tuple);
         }
-    }
-
-    pub fn server_addr(&self, id: FlowId) -> Option<SocketAddr> {
-        self.flows.get(&id).map(|f| f.server)
     }
 
     /// Pop packets smoltcp produced for the app, to write to the TUN.
@@ -463,6 +473,37 @@ mod tests {
         let ip = Ipv4Packet::new_checked(&reply).unwrap();
         assert_eq!(ip.src_addr(), SERVER);
         assert_eq!(ip.dst_addr(), APP);
+    }
+
+    /// Regression: a flow mid-handshake (SYN seen, final ACK not yet processed —
+    /// smoltcp state SynReceived) must NOT look like an app half-close. It used
+    /// to, via `may_recv()`, and the forwarder answered with `shutdown()` on a
+    /// still-connecting upstream — which the kernel treats as `tcp_disconnect()`
+    /// and latches ECONNRESET, killing every TCP flow at birth.
+    #[test]
+    fn handshake_in_progress_is_not_app_finished() {
+        let mut stack = NetStack::with_seed(1500, 0x1234);
+        let client_isn = 1000;
+        let syn = build(TcpControl::Syn, client_isn, None, &[]);
+        stack.on_tcp_packet(&syn).expect("new flow");
+        stack.poll(0); // emits SYN-ACK; socket now sits in SynReceived
+        assert!(!stack.tcp_app_finished(1), "SynReceived misread as app FIN");
+
+        // Complete the handshake -> still not finished.
+        let synack = pop_out(&mut stack).expect("SYN-ACK emitted");
+        let ip = Ipv4Packet::new_checked(&synack).unwrap();
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        let server_isn = tcp.seq_number().0;
+        let ack = build(TcpControl::None, client_isn + 1, Some(server_isn + 1), &[]);
+        stack.on_tcp_packet(&ack);
+        stack.poll(0);
+        assert!(!stack.tcp_app_finished(1), "established flow misread as app FIN");
+
+        // App FIN -> now (and only now) the sending half is finished.
+        let fin = build(TcpControl::Fin, client_isn + 1, Some(server_isn + 1), &[]);
+        stack.on_tcp_packet(&fin);
+        stack.poll(0);
+        assert!(stack.tcp_app_finished(1), "app FIN not detected");
     }
 
     #[test]

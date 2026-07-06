@@ -372,10 +372,14 @@ impl Forwarder {
                 }
             }
             self.flush_to_upstream(id);
-            // Propagate the app's half-close once its data is drained.
+            // Propagate the app's half-close once its data is drained — but
+            // never while the upstream connect is still in flight: shutdown()
+            // on a SYN_SENT socket is tcp_disconnect() in the kernel and
+            // latches ECONNRESET. The check re-runs every service pass, so the
+            // FIN propagates as soon as the connect completes.
             if self.stack.tcp_app_finished(id) {
                 if let Some(up) = self.tcp.get_mut(&id) {
-                    if up.to_upstream.is_empty() && !up.write_closed {
+                    if up.to_upstream.is_empty() && !up.write_closed && !up.connecting {
                         let _ = up.stream.shutdown(std::net::Shutdown::Write);
                         up.write_closed = true;
                     }
@@ -398,8 +402,22 @@ impl Forwarder {
             Some(Route::Tcp(id)) => {
                 let id = *id;
                 if event.is_writable() {
-                    if let Some(up) = self.tcp.get_mut(&id) {
-                        up.connecting = false;
+                    let was_connecting = self.tcp.get(&id).map_or(false, |up| up.connecting);
+                    if was_connecting {
+                        if let Some(up) = self.tcp.get_mut(&id) {
+                            up.connecting = false;
+                        }
+                        // A non-blocking connect that failed still reports
+                        // writable, with the error latched on the socket.
+                        let err = self
+                            .tcp
+                            .get(&id)
+                            .and_then(|up| up.stream.take_error().ok().flatten());
+                        if err.is_some() {
+                            self.stats.connect_fail += 1;
+                            self.stack.tcp_abort(id);
+                            return;
+                        }
                     }
                     self.flush_to_upstream(id);
                 }
@@ -467,16 +485,21 @@ impl Forwarder {
             return;
         }
         let mut written = 0;
+        let mut failed = false;
         while written < up.to_upstream.len() {
             match up.stream.write(&up.to_upstream[written..]) {
                 Ok(0) => break,
                 Ok(n) => written += n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => {
-                    self.stack.tcp_abort(id);
-                    return;
+                    failed = true;
+                    break;
                 }
             }
+        }
+        if failed {
+            self.stack.tcp_abort(id);
+            return;
         }
         if written > 0 {
             up.to_upstream.drain(..written);
