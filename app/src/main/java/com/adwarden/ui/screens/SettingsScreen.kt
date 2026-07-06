@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,12 +15,16 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +39,9 @@ import com.adwarden.ui.components.ToggleRow
 fun SettingsScreen(viewModel: MainViewModel) {
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val blockEncryptedDns by viewModel.blockEncryptedDns.collectAsStateWithLifecycle()
+    val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
+    val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
+    var showCaWizard by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxSize()
@@ -81,10 +89,21 @@ fun SettingsScreen(viewModel: MainViewModel) {
         SectionTitle("HTTPS inspection")
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
-                InfoRow(
-                    Icons.Rounded.Lock,
-                    "Certificate authority",
-                    "Generate and install Adwarden's CA to decrypt cooperating apps. Guided wizard arrives in P2.",
+                ToggleRow(
+                    title = "Intercept HTTPS (TLS)",
+                    subtitle = "Decrypt cooperating apps with Adwarden's CA. Applies on next connection.",
+                    checked = interceptTls,
+                    onCheckedChange = viewModel::setInterceptTls,
+                    leading = Icons.Rounded.Lock,
+                )
+                ActionRow(
+                    icon = Icons.Rounded.Shield,
+                    title = "Install Adwarden CA",
+                    subtitle = "Trust the root certificate so decryption can work.",
+                    onClick = {
+                        viewModel.prepareCaForInstall()
+                        showCaWizard = true
+                    },
                 )
                 InfoRow(
                     Icons.Rounded.Info,
@@ -107,6 +126,39 @@ fun SettingsScreen(viewModel: MainViewModel) {
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+
+    if (showCaWizard) {
+        CaInstallDialog(certPem = caCertPem, onDismiss = { showCaWizard = false })
+    }
+}
+
+@Composable
+private fun ActionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .padding(end = 14.dp, top = 2.dp)
+                .height(22.dp),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

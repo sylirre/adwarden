@@ -23,7 +23,9 @@ import com.adwarden.core.NativeBridge
 import com.adwarden.core.NativeCore
 import com.adwarden.core.NativeSessionHolder
 import com.adwarden.data.AppRuleRepository
+import com.adwarden.data.CaMaterial
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.CaRepository
 import com.adwarden.data.FilterRepository
 import com.adwarden.data.settings.SettingsRepository
 import com.adwarden.firewall.NetworkStateMonitor
@@ -61,6 +63,7 @@ class AdwardenVpnService : VpnService() {
     @Inject lateinit var settings: SettingsRepository
     @Inject lateinit var filters: FilterRepository
     @Inject lateinit var appRules: AppRuleRepository
+    @Inject lateinit var ca: CaRepository
     @Inject lateinit var networkMonitor: NetworkStateMonitor
     @Inject lateinit var sessionHolder: NativeSessionHolder
 
@@ -445,13 +448,27 @@ class AdwardenVpnService : VpnService() {
     }
 
     private fun buildConfigJson(): String {
-        // One-time synchronous read of the current toggle at startup; live
-        // changes are pushed by observeSettings().
-        val blockEncryptedDns = runBlocking { settings.settings.first().blockEncryptedDns }
+        // One-time synchronous read of current settings at startup. block-DNS
+        // changes are pushed live by observeSettings(); TLS interception is a
+        // start-time setting (the native factory is built at session start), so
+        // toggling it takes effect on the next VPN start / re-establish.
+        data class Cfg(val block: Boolean, val material: CaMaterial?, val requested: Boolean)
+        val cfg = runBlocking {
+            val s = settings.settings.first()
+            Cfg(s.blockEncryptedDns, if (s.interceptTls) ca.ensureCa() else null, s.interceptTls)
+        }
+        if (cfg.requested && cfg.material == null) {
+            Log.w(TAG, "TLS interception enabled but CA unavailable; starting without it")
+        }
         return JSONObject().apply {
             put("mtu", MTU)
-            put("block_encrypted_dns", blockEncryptedDns)
+            put("block_encrypted_dns", cfg.block)
             put("dns_servers", JSONArray(UPSTREAM_DNS))
+            cfg.material?.let {
+                put("intercept_tls", true)
+                put("ca_cert_pem", it.certPem)
+                put("ca_key_pem", it.keyPem)
+            }
         }.toString()
     }
 
