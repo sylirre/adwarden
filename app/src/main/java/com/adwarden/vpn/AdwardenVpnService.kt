@@ -5,9 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -59,6 +63,9 @@ class AdwardenVpnService : VpnService() {
     @Volatile private var running = false
     private var nativeHandle: Long = 0L
     private var serviceScope: CoroutineScope? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var underlyingCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var currentUnderlying: Network? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -120,7 +127,7 @@ class AdwardenVpnService : VpnService() {
         nativeHandle = handle
         sessionHolder.set(handle)
         running = true
-        applyUnderlyingNetwork()
+        registerUnderlyingNetworkTracking()
         capture.onStarted()
         startObservers()
         Log.i(TAG, "Capture started")
@@ -128,24 +135,62 @@ class AdwardenVpnService : VpnService() {
 
     /**
      * Tell the system which physical network carries the tunnel, so metering,
-     * bandwidth attribution, and capability propagation track the real underlay.
-     * One-shot at start for now; re-applying on network changes is a follow-up
-     * (wire it to a NetworkCallback alongside nativeUpdateNetwork).
+     * bandwidth attribution, and capability propagation track the real underlay —
+     * and keep it current as the device roams between Wi-Fi and cellular.
+     *
+     * We track the single best non-VPN internet network via
+     * [ConnectivityManager.registerBestMatchingNetworkCallback] (API 30+). The
+     * NOT_VPN capability keeps us from ever selecting our own tunnel as its own
+     * underlay. `onAvailable` fires immediately with the current best network, so
+     * this also covers the initial application at start.
      */
-    private fun applyUnderlyingNetwork() {
-        try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            @Suppress("DEPRECATION")
-            val underlying = cm.allNetworks.firstOrNull { network ->
-                val caps = cm.getNetworkCapabilities(network)
-                caps != null &&
-                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    private fun registerUnderlyingNetworkTracking() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                currentUnderlying = network
+                applyUnderlying(arrayOf(network))
             }
-            setUnderlyingNetworks(underlying?.let { arrayOf(it) })
-            Log.i(TAG, "setUnderlyingNetworks -> $underlying")
+
+            override fun onLost(network: Network) {
+                // Only clear if the network we're actually using went away — a
+                // stale onLost for the previous network can arrive after
+                // onAvailable for the new best one during a transport switch.
+                if (network == currentUnderlying) {
+                    currentUnderlying = null
+                    applyUnderlying(null)
+                }
+            }
+        }
+        underlyingCallback = callback
+        try {
+            cm.registerBestMatchingNetworkCallback(request, callback, mainHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "registerBestMatchingNetworkCallback failed", e)
+            underlyingCallback = null
+        }
+    }
+
+    private fun applyUnderlying(networks: Array<Network>?) {
+        try {
+            setUnderlyingNetworks(networks)
+            Log.i(TAG, "setUnderlyingNetworks -> ${networks?.joinToString()}")
         } catch (e: Exception) {
             Log.e(TAG, "setUnderlyingNetworks failed", e)
+        }
+    }
+
+    private fun unregisterUnderlyingNetworkTracking() {
+        val callback = underlyingCallback ?: return
+        underlyingCallback = null
+        currentUnderlying = null
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.unregisterNetworkCallback(callback)
         }
     }
 
@@ -239,13 +284,9 @@ class AdwardenVpnService : VpnService() {
                 // Let VPN-aware apps explicitly bind to other networks; an
                 // ad-blocker shouldn't be a captive tunnel.
                 .allowBypass()
-            // Route all IPv4 into the tunnel EXCEPT the local subnet
-            // 192.168.0.0/16, so LAN traffic (router UI, printers, casting)
-            // keeps flowing direct — the same default NetGuard and RethinkDNS
-            // ship. The DNS placeholder 10.215.173.1 stays routed (it falls in
-            // the 0.0.0.0/1 block), so DNS sinkholing is unaffected.
-            // TODO: generalize to the other RFC1918 ranges (10/8, 172.16/12)
-            // with a /32 carve-out for the placeholder.
+            // Route all IPv4 into the tunnel EXCEPT the private LAN ranges, so
+            // LAN traffic (router UI, printers, NAS, casting) keeps flowing
+            // direct — the same default NetGuard and RethinkDNS ship.
             addRoutesExceptLan(builder)
             // Never tunnel ourselves — avoids a capture feedback loop.
             runCatching { builder.addDisallowedApplication(packageName) }
@@ -258,20 +299,20 @@ class AdwardenVpnService : VpnService() {
     }
 
     /**
-     * Add IPv4 routes covering 0.0.0.0/0 minus 192.168.0.0/16, so the local subnet
-     * stays off the tunnel (matching NetGuard/RethinkDNS). 224.0.0.0/3
-     * (multicast/reserved) is also left unrouted, as is conventional for TUN VPNs.
+     * Add IPv4 routes covering 0.0.0.0/0 minus all three RFC1918 private ranges
+     * (10/8, 172.16/12, 192.168/16) and multicast/reserved (224/3), so LAN and
+     * multicast traffic stays off the tunnel (matching NetGuard/RethinkDNS).
+     *
+     * The tunnel-local DNS placeholder [DNS_PLACEHOLDER_V4] sits inside the
+     * excluded 10/8, so it is carved back IN with a /32 route: longest-prefix
+     * routing then sends only that one address through the tunnel, leaving DNS
+     * sinkholing intact while the rest of 10/8 flows direct.
      */
     private fun addRoutesExceptLan(builder: Builder) {
-        val routes = listOf(
-            "0.0.0.0" to 1, "128.0.0.0" to 2,
-            "192.0.0.0" to 9, "192.128.0.0" to 11, "192.160.0.0" to 13,
-            "192.169.0.0" to 16, "192.170.0.0" to 15, "192.172.0.0" to 14,
-            "192.176.0.0" to 12, "192.192.0.0" to 10,
-            "193.0.0.0" to 8, "194.0.0.0" to 7, "196.0.0.0" to 6,
-            "200.0.0.0" to 5, "208.0.0.0" to 4,
-        )
-        routes.forEach { (addr, prefix) -> builder.addRoute(addr, prefix) }
+        TunRoutes.complementRoutes(EXCLUDED_ROUTES).forEach { route ->
+            builder.addRoute(route.address, route.prefixLength)
+        }
+        builder.addRoute(DNS_PLACEHOLDER_V4, 32)
     }
 
     private fun buildConfigJson(): String {
@@ -311,6 +352,7 @@ class AdwardenVpnService : VpnService() {
 
     private fun stopEverything() {
         running = false
+        unregisterUnderlyingNetworkTracking()
         serviceScope?.cancel()
         serviceScope = null
         sessionHolder.clear()
@@ -347,6 +389,16 @@ class AdwardenVpnService : VpnService() {
 
         // Tunnel-local placeholder resolver advertised to apps (the gateway).
         private const val DNS_PLACEHOLDER_V4 = "10.215.173.1"
+
+        // Blocks kept OFF the tunnel: the RFC1918 private LAN ranges plus
+        // multicast/reserved (224/3). DNS_PLACEHOLDER_V4 lives inside 10/8 and is
+        // carved back in as a /32 by addRoutesExceptLan().
+        private val EXCLUDED_ROUTES = listOf(
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "224.0.0.0/3",
+        )
 
         // Real upstream resolver the core forwards allowed DNS queries to
         // (IPv4-only, matching the IPv4-only tunnel).
