@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Seed translation to validate the localization pipeline (P3-7). Not exhaustive;
+     any key absent here falls back to res/values/strings.xml (English). -->
+<resources>
+    <string name="vpn_channel_name">Статус защиты</string>
+    <string name="vpn_channel_desc">Показывает, фильтрует ли Adwarden трафик.</string>
+    <string name="vpn_notification_title">Adwarden активен</string>
+    <string name="vpn_notification_text">Фильтрация и обработка трафика на устройстве</string>
+
+    <string name="tile_subtitle_on">Защищено</string>
+    <string name="tile_subtitle_off">Выкл.</string>
+
+    <string name="nav_dashboard">Обзор</string>
+    <string name="nav_apps">Приложения</string>
+    <string name="nav_traffic">Трафик</string>
+    <string name="nav_filters">Фильтры</string>
+    <string name="nav_settings">Настройки</string>
+
+    <string name="dash_session">Сессия</string>
+    <string name="dash_packets">Пакеты</string>
+    <string name="dash_data_seen">Данные</string>
+    <string name="dash_dns_queries">DNS-запросы</string>
+    <string name="dash_blocked">Заблокировано</string>
+    <string name="dash_destinations">Адреса</string>
+    <string name="dash_tcp_flows">TCP-потоки</string>
+    <string name="dash_throughput">Пропускная способность</string>
+    <string name="dash_packets_per_sec">пакетов/с</string>
+    <string name="dash_sampling">Измерение…</string>
+    <string name="dash_throughput_hint">Включите защиту, чтобы видеть скорость в реальном времени</string>
+    <string name="dash_top_destinations">Топ адресов</string>
+    <string name="dash_no_traffic">Трафик ещё не захвачен.</string>
+    <string name="dash_history">История</string>
+    <string name="dash_blocked_today">Заблокировано сегодня</string>
+    <string name="dash_blocked_week">Заблокировано · 7 дней</string>
+    <string name="dash_blocked_per_day">Блокировки по дням</string>
+    <string name="dash_no_blocks">Блокировок пока нет. Включите защиту, чтобы собрать историю.</string>
+    <string name="dash_top_blocked_domains">Топ заблокированных доменов</string>
+    <string name="dash_no_domains">Доменов пока не заблокировано.</string>
+    <string name="dash_top_blocked_apps">Топ заблокированных приложений</string>
+    <string name="dash_no_app_blocks">Блокировок по приложениям пока нет.</string>
+    <string name="hero_protected">Защищено</string>
+    <string name="hero_paused">Приостановлено</string>
+    <string name="hero_filtering">Фильтрация</string>
+    <string name="hero_off">Выкл.</string>
+    <string name="hero_inspecting">Анализ трафика</string>
+    <string name="hero_protection_off">Защита выключена</string>
+    <string name="hero_uptime">Работает %1$s · %2$s пакетов</string>
+    <string name="hero_start_hint">Запустите фильтрацию и анализ трафика на устройстве</string>
+    <string name="hero_pause">Приостановить защиту</string>
+    <string name="hero_turn_on">Включить защиту</string>
+    <string name="filtering_banner">Разрешённый трафик проходит через нативное ядро; заблокированные домены и приложения отбрасываются.</string>
+
+    <string name="apps_title">Приложения</string>
+    <string name="apps_subtitle">Блокируйте приложение по Wi-Fi и мобильной сети отдельно или включите анализ HTTPS (замок). Действует при включённой защите.</string>
+    <string name="apps_search">Поиск приложений</string>
+    <string name="apps_no_match">Нет приложений по запросу «%1$s»</string>
+    <string name="apps_inspecting_suffix"> · Анализ HTTPS</string>
+    <string name="apps_status_blocked_all">Заблокировано везде</string>
+    <string name="apps_status_wifi_blocked">Wi-Fi заблокирован</string>
+    <string name="apps_status_mobile_blocked">Моб. сеть заблокирована</string>
+    <string name="apps_status_allowed">Разрешено</string>
+    <string name="apps_cd_wifi">Wi-Fi для %1$s</string>
+    <string name="apps_cd_mobile">Мобильные данные для %1$s</string>
+    <string name="apps_cd_inspect">Анализ HTTPS для %1$s</string>
+
+    <string name="traffic_title">Живой трафик</string>
+    <string name="traffic_stop">Стоп</string>
+    <string name="traffic_capture">Запись</string>
+    <string name="traffic_search">Поиск по IP или порту</string>
+    <string name="traffic_metadata_pinned">только метаданные · сертификат закреплён</string>
+    <string name="traffic_row_meta">с :%1$d · IPv%2$d · %3$s</string>
+    <string name="traffic_empty_title">Соединений пока нет</string>
+    <string name="traffic_empty_subtitle">Включите защиту, чтобы видеть трафик в реальном времени</string>
+
+    <string name="filters_title">Фильтры</string>
+    <plurals name="filters_rules_active">
+        <item quantity="one">%1$s активное правило</item>
+        <item quantity="few">%1$s активных правила</item>
+        <item quantity="many">%1$s активных правил</item>
+        <item quantity="other">%1$s активных правил</item>
+    </plurals>
+    <string name="filters_rules_hint">Сетевые правила применяются в VPN. Косметические и скриптовые правила требуют браузера и игнорируются.</string>
+    <string name="filters_subscriptions">Подписки</string>
+    <string name="filters_custom_rules">Свои правила</string>
+    <string name="filters_sub_meta">%1$s правил · %2$s</string>
+    <string name="filters_add_rule">Добавить правило</string>
+    <string name="filters_delete_rule">Удалить правило</string>
+
+    <string name="settings_title">Настройки</string>
+    <string name="settings_appearance">Оформление</string>
+    <string name="settings_theme">Тема</string>
+    <string name="settings_theme_system">Системная</string>
+    <string name="settings_theme_light">Светлая</string>
+    <string name="settings_theme_dark">Тёмная</string>
+    <string name="settings_material_you">Цвета Material You</string>
+    <string name="settings_material_you_sub">Подстраивать под палитру обоев (Android 12+)</string>
+    <string name="settings_dns_filtering">DNS-фильтрация</string>
+    <string name="settings_block_encrypted_dns">Блокировать зашифрованный DNS</string>
+    <string name="settings_block_encrypted_dns_sub">Запрещать DoT/DoH, чтобы запросы шли открытым текстом, который мы фильтруем.</string>
+    <string name="settings_limitation">Ограничение</string>
+    <string name="settings_limitation_body">Private DNS и DoH через 443 всё равно могут обойти фильтрацию; это лишь блокирует частые запасные варианты.</string>
+    <string name="settings_https_inspection">Анализ HTTPS</string>
+    <string name="settings_enable_https">Включить анализ HTTPS</string>
+    <string name="settings_enable_https_sub">Главный переключатель. Выберите приложения на вкладке «Приложения»; без этого ничего не перехватывается. Сначала установите CA. Применяется при следующем соединении.</string>
+    <string name="settings_install_ca">Установить CA Adwarden</string>
+    <string name="settings_install_ca_sub">Доверьте корневому сертификату, чтобы работала расшифровка.</string>
+    <string name="settings_nonroot_limits">Ограничения без root</string>
+    <string name="settings_nonroot_limits_body">Без root Android позволяет расшифровывать только приложения, доверяющие пользовательским сертификатам (например, Chrome). Блокировка, журнал и PCAP работают для всех приложений.</string>
+    <string name="settings_system_integration">Интеграция с системой</string>
+    <string name="settings_always_on">Постоянная VPN</string>
+    <string name="settings_always_on_sub">Откройте настройки VPN Android, чтобы Adwarden был всегда подключён и при желании блокировал трафик без VPN.</string>
+    <string name="settings_qs_tile">Плитка быстрых настроек</string>
+    <string name="settings_qs_tile_sub">Добавьте плитку Adwarden в панель быстрых настроек, чтобы включать защиту без открытия приложения.</string>
+    <string name="settings_about">О приложении</string>
+    <string name="settings_about_version">Версия %1$s</string>
+    <string name="settings_core_title">Ядро на устройстве</string>
+    <string name="settings_core_body">Фильтрация, файрвол по приложениям и анализ HTTPS работают в нативном ядре на телефоне — трафик никуда не отправляется.</string>
+
+    <string name="ca_what_decrypts">Что можно расшифровать</string>
+    <string name="ca_preparing">Подготовка сертификата…</string>
+    <string name="ca_install_cert">Установить сертификат</string>
+    <string name="ca_export_pem">Экспорт .pem</string>
+
+    <string name="onb_tagline">Блокируйте рекламу и трекеры, включайте файрвол по приложениям и анализируйте каждое соединение — без root.</string>
+    <string name="onb_feat_filter_title">Фильтрация по правилам</string>
+    <string name="onb_feat_filter_sub">Подпишитесь на списки AdGuard и EasyList или пишите свои.</string>
+    <string name="onb_feat_firewall_title">Файрвол по приложениям</string>
+    <string name="onb_feat_firewall_sub">Отключайте любое приложение от Wi-Fi или мобильной сети по отдельности.</string>
+    <string name="onb_feat_traffic_title">Живой трафик и запись</string>
+    <string name="onb_feat_traffic_sub">Смотрите соединения в реальном времени и экспортируйте PCAP.</string>
+    <string name="onb_continue">Далее</string>
+    <string name="onb_vpn_title">Разрешите приватную VPN</string>
+    <string name="onb_vpn_body">Adwarden фильтрует и анализирует трафик через локальную VPN на устройстве. Нет удалённого сервера — туннель не покидает телефон. Android покажет разовый запрос согласия.</string>
+    <string name="onb_vpn_cta">Разрешить VPN</string>
+    <string name="onb_notif_title">Показывать уведомление о статусе</string>
+    <string name="onb_notif_body">Во время работы защиты Android держит постоянное уведомление, чтобы вы знали, что Adwarden активен. Разрешите его, чтобы индикатор был виден.</string>
+    <string name="onb_notif_cta">Разрешить уведомления</string>
+    <string name="onb_done_title">Всё готово</string>
+    <string name="onb_done_body">Включайте защиту на главном экране, когда захотите. Чтобы позже расшифровывать HTTPS, установите CA Adwarden — это опционально и выключено по умолчанию.</string>
+    <string name="onb_install_ca">Установить CA Adwarden</string>
+    <string name="onb_start">Начать пользоваться Adwarden</string>
+    <string name="onb_skip">Пропустить</string>
+</resources>

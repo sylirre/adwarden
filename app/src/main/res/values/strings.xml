@@ -1,11 +1,158 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Adwarden</string>
+
+    <!-- Foreground service / notification -->
     <string name="vpn_channel_name">Protection status</string>
     <string name="vpn_channel_desc">Shows whether Adwarden is actively filtering and inspecting traffic.</string>
     <string name="vpn_notification_title">Adwarden is active</string>
     <string name="vpn_notification_text">Filtering and forwarding on-device traffic</string>
+
+    <!-- Quick Settings tile (P3-5) -->
     <string name="tile_label">Adwarden</string>
     <string name="tile_subtitle_on">Protected</string>
     <string name="tile_subtitle_off">Off</string>
+
+    <!-- Navigation -->
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_apps">Apps</string>
+    <string name="nav_traffic">Traffic</string>
+    <string name="nav_filters">Filters</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Dashboard -->
+    <string name="dash_session">Session</string>
+    <string name="dash_packets">Packets</string>
+    <string name="dash_data_seen">Data seen</string>
+    <string name="dash_dns_queries">DNS queries</string>
+    <string name="dash_blocked">Blocked</string>
+    <string name="dash_destinations">Destinations</string>
+    <string name="dash_tcp_flows">TCP flows</string>
+    <string name="dash_throughput">Throughput</string>
+    <string name="dash_packets_per_sec">packets/sec</string>
+    <string name="dash_sampling">Sampling…</string>
+    <string name="dash_throughput_hint">Turn on protection to see live throughput</string>
+    <string name="dash_top_destinations">Top destinations</string>
+    <string name="dash_no_traffic">No traffic captured yet.</string>
+    <string name="dash_history">History</string>
+    <string name="dash_blocked_today">Blocked today</string>
+    <string name="dash_blocked_week">Blocked · 7 days</string>
+    <string name="dash_blocked_per_day">Blocked per day</string>
+    <string name="dash_no_blocks">No blocks recorded yet. Turn on protection to start building history.</string>
+    <string name="dash_top_blocked_domains">Top blocked domains</string>
+    <string name="dash_no_domains">No domains blocked yet.</string>
+    <string name="dash_top_blocked_apps">Top blocked apps</string>
+    <string name="dash_no_app_blocks">No app blocks attributed yet.</string>
+    <string name="hero_protected">Protected</string>
+    <string name="hero_paused">Paused</string>
+    <string name="hero_filtering">Filtering</string>
+    <string name="hero_off">Off</string>
+    <string name="hero_inspecting">Inspecting traffic</string>
+    <string name="hero_protection_off">Protection is off</string>
+    <string name="hero_uptime">Up %1$s · %2$s packets seen</string>
+    <string name="hero_start_hint">Start to filter and inspect on-device traffic</string>
+    <string name="hero_pause">Pause protection</string>
+    <string name="hero_turn_on">Turn on protection</string>
+    <string name="filtering_banner">Allowed traffic is forwarded through the native core; blocked domains and apps are dropped.</string>
+
+    <!-- Apps -->
+    <string name="apps_title">Apps</string>
+    <string name="apps_subtitle">Block an app on Wi-Fi and mobile independently, or opt it into HTTPS inspection (lock). Enforced while protection is on.</string>
+    <string name="apps_search">Search apps</string>
+    <string name="apps_no_match">No apps match \"%1$s\"</string>
+    <string name="apps_inspecting_suffix"> · Inspecting HTTPS</string>
+    <string name="apps_status_blocked_all">Blocked everywhere</string>
+    <string name="apps_status_wifi_blocked">Wi-Fi blocked</string>
+    <string name="apps_status_mobile_blocked">Mobile blocked</string>
+    <string name="apps_status_allowed">Allowed</string>
+    <string name="apps_cd_wifi">Wi-Fi for %1$s</string>
+    <string name="apps_cd_mobile">Mobile data for %1$s</string>
+    <string name="apps_cd_inspect">HTTPS inspection for %1$s</string>
+
+    <!-- Traffic -->
+    <string name="traffic_title">Live traffic</string>
+    <string name="traffic_har">HAR</string>
+    <string name="traffic_stop">Stop</string>
+    <string name="traffic_capture">Capture</string>
+    <string name="traffic_search">Search IP or port</string>
+    <string name="traffic_metadata_pinned">metadata only · certificate pinned</string>
+    <string name="traffic_row_meta">from :%1$d · IPv%2$d · %3$s</string>
+    <string name="traffic_empty_title">No connections yet</string>
+    <string name="traffic_empty_subtitle">Turn on protection to watch traffic live</string>
+
+    <!-- Filters -->
+    <string name="filters_title">Filters</string>
+    <plurals name="filters_rules_active">
+        <item quantity="one">%1$s rule active</item>
+        <item quantity="other">%1$s rules active</item>
+    </plurals>
+    <string name="filters_rules_hint">Network-level rules apply on the VPN. Cosmetic and scriptlet rules need a browser and are ignored.</string>
+    <string name="filters_subscriptions">Subscriptions</string>
+    <string name="filters_custom_rules">Custom rules</string>
+    <string name="filters_sub_meta">%1$s rules · %2$s</string>
+    <string name="filters_rule_placeholder">||domain.com^ or @@exception</string>
+    <string name="filters_add_rule">Add rule</string>
+    <string name="filters_delete_rule">Delete rule</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_material_you">Material You colors</string>
+    <string name="settings_material_you_sub">Match the system wallpaper palette (Android 12+)</string>
+    <string name="settings_dns_filtering">DNS filtering</string>
+    <string name="settings_block_encrypted_dns">Block encrypted DNS</string>
+    <string name="settings_block_encrypted_dns_sub">Deny DoT/DoH so queries fall back to plaintext we can filter.</string>
+    <string name="settings_limitation">Limitation</string>
+    <string name="settings_limitation_body">Android Private DNS and DoH over 443 can still bypass plaintext filtering; this only forces the common fallbacks.</string>
+    <string name="settings_https_inspection">HTTPS inspection</string>
+    <string name="settings_enable_https">Enable HTTPS inspection</string>
+    <string name="settings_enable_https_sub">Master switch. Choose which apps to inspect on the Apps tab; nothing is intercepted until you do. Install the CA first. Applies on next connection.</string>
+    <string name="settings_install_ca">Install Adwarden CA</string>
+    <string name="settings_install_ca_sub">Trust the root certificate so decryption can work.</string>
+    <string name="settings_nonroot_limits">Non-root limits</string>
+    <string name="settings_nonroot_limits_body">Without root, Android only lets us decrypt apps that trust user certificates (e.g. Chrome). Blocking, logging and PCAP still work for every app.</string>
+    <string name="settings_system_integration">System integration</string>
+    <string name="settings_always_on">Always-on VPN</string>
+    <string name="settings_always_on_sub">Open Android\'s VPN settings to keep Adwarden always connected, and optionally block traffic while it\'s off (lockdown).</string>
+    <string name="settings_qs_tile">Quick Settings tile</string>
+    <string name="settings_qs_tile_sub">Add the Adwarden tile from the Quick Settings edit panel to toggle protection without opening the app.</string>
+    <string name="settings_about">About</string>
+    <string name="settings_about_version">Version %1$s</string>
+    <string name="settings_core_title">On-device core</string>
+    <string name="settings_core_body">Filtering, the per-app firewall and HTTPS inspection all run in a native core on your phone — no traffic is sent to any server.</string>
+
+    <!-- CA install wizard -->
+    <string name="ca_what_decrypts">What this can decrypt</string>
+    <string name="ca_what_decrypts_body">Since Android 7, apps only trust user-installed CAs if they opt in. Browsers like Chrome and Firefox do; many apps pin their certificates and stay opaque. Blocking, logging and PCAP keep working for every app — only full HTTPS decode is limited to the cooperating subset.</string>
+    <string name="ca_preparing">Preparing certificate…</string>
+    <string name="ca_install_cert">Install certificate</string>
+    <string name="ca_export_pem">Export .pem</string>
+    <string name="ca_steps_34">1. Tap Install certificate below.\n2. The system will ask what to install — choose \"CA certificate\".\n3. Confirm the security warning to trust the Adwarden CA.\nIf the picker doesn\'t appear, use Export .pem, then Settings ▸ Security &amp; privacy ▸ More security ▸ Encryption &amp; credentials ▸ Install a certificate ▸ CA certificate, and pick the exported file.</string>
+    <string name="ca_steps_30">1. Tap Install certificate below and choose \"CA certificate\".\n2. Confirm the security warning.\nOtherwise Export .pem and install it via Settings ▸ Security ▸ Encryption &amp; credentials ▸ Install a certificate ▸ CA certificate.</string>
+    <string name="ca_steps_legacy">Tap Install certificate and choose \"CA certificate\", or Export .pem and install it from Settings ▸ Security ▸ Install from storage.</string>
+
+    <!-- Onboarding -->
+    <string name="onb_tagline">Block ads and trackers, run a per-app firewall, and inspect every connection — no root required.</string>
+    <string name="onb_feat_filter_title">Rule-based filtering</string>
+    <string name="onb_feat_filter_sub">Subscribe to AdGuard and EasyList rule sets, or write your own.</string>
+    <string name="onb_feat_firewall_title">Per-app firewall</string>
+    <string name="onb_feat_firewall_sub">Cut off any app on Wi-Fi or mobile data independently.</string>
+    <string name="onb_feat_traffic_title">Live traffic &amp; capture</string>
+    <string name="onb_feat_traffic_sub">Watch connections in real time and export PCAP for analysis.</string>
+    <string name="onb_continue">Continue</string>
+    <string name="onb_vpn_title">Allow the private VPN</string>
+    <string name="onb_vpn_body">Adwarden filters and inspects traffic through a local, on-device VPN. There is no remote server — the tunnel never leaves your phone. Android shows a one-time consent prompt for this.</string>
+    <string name="onb_vpn_cta">Grant VPN access</string>
+    <string name="onb_notif_title">Show a status notification</string>
+    <string name="onb_notif_body">While protection runs, Android keeps a permanent notification so you always know Adwarden is active. Allow it to keep that indicator visible.</string>
+    <string name="onb_notif_cta">Allow notifications</string>
+    <string name="onb_done_title">You\'re all set</string>
+    <string name="onb_done_body">Turn on protection from the dashboard whenever you\'re ready. To decrypt HTTPS for inspection later, install the Adwarden CA — it\'s optional and off by default.</string>
+    <string name="onb_install_ca">Install Adwarden CA</string>
+    <string name="onb_start">Start using Adwarden</string>
+    <string name="onb_skip">Skip for now</string>
 </resources>

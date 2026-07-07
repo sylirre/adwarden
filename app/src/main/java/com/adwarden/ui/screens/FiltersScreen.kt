@@ -28,10 +28,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.adwarden.R
 import com.adwarden.data.db.CustomRule
 import com.adwarden.data.db.FilterSubscription
 import com.adwarden.ui.components.AdwCard
@@ -51,7 +54,7 @@ fun FiltersScreen(viewModel: FiltersViewModel = hiltViewModel()) {
             .padding(horizontal = 16.dp),
     ) {
         Text(
-            "Filters",
+            stringResource(R.string.filters_title),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(top = 16.dp, bottom = 12.dp),
@@ -65,12 +68,16 @@ fun FiltersScreen(viewModel: FiltersViewModel = hiltViewModel()) {
                 AdwCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(18.dp)) {
                         Text(
-                            "${formatCount(totalRules)} rules active",
+                            pluralStringResource(
+                                R.plurals.filters_rules_active,
+                                totalRules.toInt(),
+                                formatCount(totalRules),
+                            ),
                             style = MaterialTheme.typography.headlineSmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            "Network-level rules apply on the VPN. Cosmetic and scriptlet rules need a browser and are ignored.",
+                            stringResource(R.string.filters_rules_hint),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 4.dp),
@@ -79,12 +86,12 @@ fun FiltersScreen(viewModel: FiltersViewModel = hiltViewModel()) {
                 }
             }
 
-            item { SectionTitle("Subscriptions") }
+            item { SectionTitle(stringResource(R.string.filters_subscriptions)) }
             items(subscriptions, key = { it.id }) { sub ->
                 SubscriptionCard(sub, onToggle = { viewModel.setEnabled(sub.id, it) })
             }
 
-            item { SectionTitle("Custom rules") }
+            item { SectionTitle(stringResource(R.string.filters_custom_rules)) }
             item {
                 CustomRulesCard(
                     rules = customRules,
@@ -112,7 +119,7 @@ private fun SubscriptionCard(sub: FilterSubscription, onToggle: (Boolean) -> Uni
             Column(Modifier.weight(1f)) {
                 Text(sub.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "${formatCount(sub.ruleCount.toLong())} rules · ${hostOf(sub.url)}",
+                    stringResource(R.string.filters_sub_meta, formatCount(sub.ruleCount.toLong()), hostOf(sub.url)),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -140,12 +147,12 @@ private fun CustomRulesCard(
                     value = draft,
                     onValueChange = onDraftChange,
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("||domain.com^ or @@exception") },
+                    placeholder = { Text(stringResource(R.string.filters_rule_placeholder)) },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                 )
                 IconButton(onClick = { if (draft.isNotBlank()) onAdd() }) {
-                    Icon(Icons.Rounded.Add, contentDescription = "Add rule", tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.filters_add_rule), tint = MaterialTheme.colorScheme.primary)
                 }
             }
             rules.forEachIndexed { i, rule ->
@@ -166,7 +173,7 @@ private fun CustomRulesCard(
                     IconButton(onClick = { onDelete(rule) }) {
                         Icon(
                             Icons.Rounded.Close,
-                            contentDescription = "Delete rule",
+                            contentDescription = stringResource(R.string.filters_delete_rule),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

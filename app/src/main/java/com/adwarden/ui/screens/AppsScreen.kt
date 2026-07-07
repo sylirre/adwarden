@@ -37,13 +37,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.adwarden.R
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.theme.AdwShapes
 import com.adwarden.ui.theme.BrandBlue
@@ -66,14 +69,13 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
             .padding(horizontal = 16.dp),
     ) {
         Text(
-            "Apps",
+            stringResource(R.string.apps_title),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(top = 16.dp, bottom = 2.dp),
         )
         Text(
-            "Block an app on Wi-Fi and mobile independently, or opt it into HTTPS inspection " +
-                "(lock). Enforced while protection is on.",
+            stringResource(R.string.apps_subtitle),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp),
@@ -90,7 +92,7 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search apps") },
+            placeholder = { Text(stringResource(R.string.apps_search)) },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
@@ -108,7 +110,7 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
         if (filtered.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "No apps match \"$query\"",
+                    stringResource(R.string.apps_no_match, query),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -171,25 +173,27 @@ private fun AppCard(
             ) {
                 Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    statusText(wifi, mobile) + if (policy.inspectTls) " · Inspecting HTTPS" else "",
+                    stringResource(statusRes(wifi, mobile)) +
+                        if (policy.inspectTls) stringResource(R.string.apps_inspecting_suffix) else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (!wifi || !mobile) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            MiniToggle(Icons.Rounded.Wifi, wifi, "Wi-Fi for $label", onWifi)
+            MiniToggle(Icons.Rounded.Wifi, wifi, stringResource(R.string.apps_cd_wifi, label), onWifi)
             Spacer(Modifier.size(8.dp))
-            MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, "Mobile data for $label", onMobile)
+            MiniToggle(Icons.Rounded.SignalCellularAlt, mobile, stringResource(R.string.apps_cd_mobile, label), onMobile)
             Spacer(Modifier.size(8.dp))
-            MiniToggle(Icons.Rounded.Lock, policy.inspectTls, "HTTPS inspection for $label", onInspect)
+            MiniToggle(Icons.Rounded.Lock, policy.inspectTls, stringResource(R.string.apps_cd_inspect, label), onInspect)
         }
     }
 }
 
-private fun statusText(wifi: Boolean, mobile: Boolean): String = when {
-    !wifi && !mobile -> "Blocked everywhere"
-    !wifi -> "Wi-Fi blocked"
-    !mobile -> "Mobile blocked"
-    else -> "Allowed"
+@StringRes
+private fun statusRes(wifi: Boolean, mobile: Boolean): Int = when {
+    !wifi && !mobile -> R.string.apps_status_blocked_all
+    !wifi -> R.string.apps_status_wifi_blocked
+    !mobile -> R.string.apps_status_mobile_blocked
+    else -> R.string.apps_status_allowed
 }
 
 @Composable

@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -42,6 +43,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
+import com.adwarden.R
 import com.adwarden.core.ConnectionEvent
 import com.adwarden.core.L4Proto
 import com.adwarden.ui.components.ProtoBadge
@@ -111,7 +113,7 @@ fun TrafficScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Live traffic",
+                stringResource(R.string.traffic_title),
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.weight(1f),
@@ -119,7 +121,7 @@ fun TrafficScreen(
             if (running) {
                 TextButton(onClick = { exportHar.launch(pcapViewModel.defaultHarFileName()) }) {
                     Icon(Icons.Rounded.DataObject, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("  HAR")
+                    Text("  " + stringResource(R.string.traffic_har))
                 }
                 CaptureAction(
                     capturing = capturing,
@@ -132,7 +134,7 @@ fun TrafficScreen(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search IP or port") },
+            placeholder = { Text(stringResource(R.string.traffic_search)) },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
@@ -157,12 +159,12 @@ private fun CaptureAction(capturing: Boolean, onStart: () -> Unit, onStop: () ->
     if (capturing) {
         TextButton(onClick = onStop) {
             Icon(Icons.Rounded.Stop, contentDescription = null, tint = Warning, modifier = Modifier.size(18.dp))
-            Text("  Stop", color = Warning)
+            Text("  " + stringResource(R.string.traffic_stop), color = Warning)
         }
     } else {
         TextButton(onClick = onStart) {
             Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("  Capture")
+            Text("  " + stringResource(R.string.traffic_capture))
         }
     }
 }
@@ -199,8 +201,8 @@ private fun TrafficRow(event: ConnectionEvent) {
                 maxLines = 1,
             )
             Text(
-                if (event.tlsPinned) "metadata only · certificate pinned"
-                else "from :${event.srcPort} · IPv${event.ipVersion} · ${formatBytes(event.length.toLong())}",
+                if (event.tlsPinned) stringResource(R.string.traffic_metadata_pinned)
+                else stringResource(R.string.traffic_row_meta, event.srcPort, event.ipVersion, formatBytes(event.length.toLong())),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (event.tlsPinned) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -226,12 +228,12 @@ private fun EmptyTraffic() {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "No connections yet",
+                stringResource(R.string.traffic_empty_title),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                "Turn on protection to watch traffic live",
+                stringResource(R.string.traffic_empty_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

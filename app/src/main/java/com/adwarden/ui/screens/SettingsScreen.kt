@@ -38,11 +38,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.adwarden.BuildConfig
 import com.adwarden.MainViewModel
+import com.adwarden.R
 import com.adwarden.data.settings.ThemeMode
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.components.SectionTitle
@@ -65,19 +68,19 @@ fun SettingsScreen(viewModel: MainViewModel) {
             .padding(horizontal = 16.dp),
     ) {
         Text(
-            "Settings",
+            stringResource(R.string.settings_title),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(top = 16.dp, bottom = 12.dp),
         )
 
-        SectionTitle("Appearance")
+        SectionTitle(stringResource(R.string.settings_appearance))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ThemeModePicker(selected = themeMode, onSelect = viewModel::setThemeMode)
                 ToggleRow(
-                    title = "Material You colors",
-                    subtitle = "Match the system wallpaper palette (Android 12+)",
+                    title = stringResource(R.string.settings_material_you),
+                    subtitle = stringResource(R.string.settings_material_you_sub),
                     checked = dynamicColor,
                     onCheckedChange = viewModel::setDynamicColor,
                     leading = Icons.Rounded.DarkMode,
@@ -86,39 +89,39 @@ fun SettingsScreen(viewModel: MainViewModel) {
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("DNS filtering")
+        SectionTitle(stringResource(R.string.settings_dns_filtering))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ToggleRow(
-                    title = "Block encrypted DNS",
-                    subtitle = "Deny DoT/DoH so queries fall back to plaintext we can filter.",
+                    title = stringResource(R.string.settings_block_encrypted_dns),
+                    subtitle = stringResource(R.string.settings_block_encrypted_dns_sub),
                     checked = blockEncryptedDns,
                     onCheckedChange = viewModel::setBlockEncryptedDns,
                     leading = Icons.Rounded.Dns,
                 )
                 InfoRow(
                     Icons.Rounded.Info,
-                    "Limitation",
-                    "Android Private DNS and DoH over 443 can still bypass plaintext filtering; this only forces the common fallbacks.",
+                    stringResource(R.string.settings_limitation),
+                    stringResource(R.string.settings_limitation_body),
                 )
             }
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("HTTPS inspection")
+        SectionTitle(stringResource(R.string.settings_https_inspection))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ToggleRow(
-                    title = "Enable HTTPS inspection",
-                    subtitle = "Master switch. Choose which apps to inspect on the Apps tab; nothing is intercepted until you do. Install the CA first. Applies on next connection.",
+                    title = stringResource(R.string.settings_enable_https),
+                    subtitle = stringResource(R.string.settings_enable_https_sub),
                     checked = interceptTls,
                     onCheckedChange = viewModel::setInterceptTls,
                     leading = Icons.Rounded.Lock,
                 )
                 ActionRow(
                     icon = Icons.Rounded.Shield,
-                    title = "Install Adwarden CA",
-                    subtitle = "Trust the root certificate so decryption can work.",
+                    title = stringResource(R.string.settings_install_ca),
+                    subtitle = stringResource(R.string.settings_install_ca_sub),
                     onClick = {
                         viewModel.prepareCaForInstall()
                         showCaWizard = true
@@ -126,20 +129,20 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 )
                 InfoRow(
                     Icons.Rounded.Info,
-                    "Non-root limits",
-                    "Without root, Android only lets us decrypt apps that trust user certificates (e.g. Chrome). Blocking, logging and PCAP still work for every app.",
+                    stringResource(R.string.settings_nonroot_limits),
+                    stringResource(R.string.settings_nonroot_limits_body),
                 )
             }
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("System integration")
+        SectionTitle(stringResource(R.string.settings_system_integration))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ActionRow(
                     icon = Icons.Rounded.VpnKey,
-                    title = "Always-on VPN",
-                    subtitle = "Open Android's VPN settings to keep Adwarden always connected, and optionally block traffic while it's off (lockdown).",
+                    title = stringResource(R.string.settings_always_on),
+                    subtitle = stringResource(R.string.settings_always_on_sub),
                     onClick = {
                         runCatching {
                             context.startActivity(
@@ -151,21 +154,25 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 )
                 InfoRow(
                     Icons.Rounded.Info,
-                    "Quick Settings tile",
-                    "Add the Adwarden tile from the Quick Settings edit panel to toggle protection without opening the app.",
+                    stringResource(R.string.settings_qs_tile),
+                    stringResource(R.string.settings_qs_tile_sub),
                 )
             }
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("About")
+        SectionTitle(stringResource(R.string.settings_about))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
-                InfoRow(Icons.Rounded.Verified, "Adwarden", "Version 0.1.0 · P0 preview")
+                InfoRow(
+                    Icons.Rounded.Verified,
+                    stringResource(R.string.app_name),
+                    stringResource(R.string.settings_about_version, BuildConfig.VERSION_NAME),
+                )
                 InfoRow(
                     Icons.Rounded.Info,
-                    "Capture mode",
-                    "Monitor — packets are inspected, not yet forwarded. Transparent forwarding lands with the native core (P1/P2).",
+                    stringResource(R.string.settings_core_title),
+                    stringResource(R.string.settings_core_body),
                 )
             }
         }
@@ -185,7 +192,7 @@ private fun ThemeModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) 
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Text(
-            "Theme",
+            stringResource(R.string.settings_theme),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
         )
@@ -193,9 +200,9 @@ private fun ThemeModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeMode.entries.forEach { mode ->
                 val label = when (mode) {
-                    ThemeMode.SYSTEM -> "System"
-                    ThemeMode.LIGHT -> "Light"
-                    ThemeMode.DARK -> "Dark"
+                    ThemeMode.SYSTEM -> stringResource(R.string.settings_theme_system)
+                    ThemeMode.LIGHT -> stringResource(R.string.settings_theme_light)
+                    ThemeMode.DARK -> stringResource(R.string.settings_theme_dark)
                 }
                 val chosen = mode == selected
                 Box(

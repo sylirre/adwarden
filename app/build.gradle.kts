@@ -18,8 +18,8 @@ android {
         applicationId = "com.adwarden"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-p1"
+        versionCode = 2
+        versionName = "0.3.0-p3"
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -51,6 +51,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

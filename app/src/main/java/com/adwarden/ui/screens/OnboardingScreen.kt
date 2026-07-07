@@ -48,12 +48,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
+import com.adwarden.R
 import com.adwarden.ui.components.gradientBrush
 import com.adwarden.ui.theme.BrandBlue
 import com.adwarden.ui.theme.BrandCyan
@@ -140,18 +142,14 @@ fun OnboardingScreen(viewModel: MainViewModel) {
                 OnbPage.VPN -> PrimingPage(
                     icon = Icons.Rounded.VpnKey,
                     tint = BrandBlue,
-                    title = "Allow the private VPN",
-                    body = "Adwarden filters and inspects traffic through a local, on-device " +
-                        "VPN. There is no remote server — the tunnel never leaves your phone. " +
-                        "Android shows a one-time consent prompt for this.",
+                    title = stringResource(R.string.onb_vpn_title),
+                    body = stringResource(R.string.onb_vpn_body),
                 )
                 OnbPage.NOTIFICATIONS -> PrimingPage(
                     icon = Icons.Rounded.Notifications,
                     tint = BrandViolet,
-                    title = "Show a status notification",
-                    body = "While protection runs, Android keeps a permanent notification so " +
-                        "you always know Adwarden is active. Allow it to keep that indicator " +
-                        "visible.",
+                    title = stringResource(R.string.onb_notif_title),
+                    body = stringResource(R.string.onb_notif_body),
                 )
                 OnbPage.DONE -> DonePage(
                     onInstallCa = {
@@ -167,10 +165,10 @@ fun OnboardingScreen(viewModel: MainViewModel) {
 
         val page = pages[pagerState.currentPage]
         val (primaryLabel, primaryAction) = when (page) {
-            OnbPage.WELCOME -> "Continue" to ::advance
-            OnbPage.VPN -> "Grant VPN access" to ::requestVpn
-            OnbPage.NOTIFICATIONS -> "Allow notifications" to ::requestNotifications
-            OnbPage.DONE -> "Start using Adwarden" to viewModel::completeOnboarding
+            OnbPage.WELCOME -> stringResource(R.string.onb_continue) to ::advance
+            OnbPage.VPN -> stringResource(R.string.onb_vpn_cta) to ::requestVpn
+            OnbPage.NOTIFICATIONS -> stringResource(R.string.onb_notif_cta) to ::requestNotifications
+            OnbPage.DONE -> stringResource(R.string.onb_start) to viewModel::completeOnboarding
         }
         Button(
             onClick = primaryAction,
@@ -185,7 +183,7 @@ fun OnboardingScreen(viewModel: MainViewModel) {
         // Permission pages are always skippable.
         if (page == OnbPage.VPN || page == OnbPage.NOTIFICATIONS) {
             TextButton(onClick = ::advance, modifier = Modifier.fillMaxWidth()) {
-                Text("Skip for now", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.onb_skip), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
             Spacer(Modifier.height(8.dp))
@@ -215,17 +213,17 @@ private fun WelcomePage() {
             Icon(Icons.Rounded.Shield, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp))
         }
         Spacer(Modifier.height(24.dp))
-        Text("Adwarden", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.onBackground)
+        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.onBackground)
         Text(
-            "Block ads and trackers, run a per-app firewall, and inspect every connection — no root required.",
+            stringResource(R.string.onb_tagline),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 10.dp),
         )
         Spacer(Modifier.height(32.dp))
-        FeatureRow(Icons.Rounded.FilterAlt, BrandBlue, "Rule-based filtering", "Subscribe to AdGuard and EasyList rule sets, or write your own.")
-        FeatureRow(Icons.Rounded.Bolt, BrandViolet, "Per-app firewall", "Cut off any app on Wi-Fi or mobile data independently.")
-        FeatureRow(Icons.Rounded.Timeline, BrandCyan, "Live traffic & capture", "Watch connections in real time and export PCAP for analysis.")
+        FeatureRow(Icons.Rounded.FilterAlt, BrandBlue, stringResource(R.string.onb_feat_filter_title), stringResource(R.string.onb_feat_filter_sub))
+        FeatureRow(Icons.Rounded.Bolt, BrandViolet, stringResource(R.string.onb_feat_firewall_title), stringResource(R.string.onb_feat_firewall_sub))
+        FeatureRow(Icons.Rounded.Timeline, BrandCyan, stringResource(R.string.onb_feat_traffic_title), stringResource(R.string.onb_feat_traffic_sub))
         Spacer(Modifier.height(16.dp))
     }
 }
@@ -286,7 +284,7 @@ private fun DonePage(onInstallCa: () -> Unit) {
         }
         Spacer(Modifier.height(28.dp))
         Text(
-            "You're all set",
+            stringResource(R.string.onb_done_title),
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onBackground,
             fontWeight = FontWeight.SemiBold,
@@ -294,15 +292,14 @@ private fun DonePage(onInstallCa: () -> Unit) {
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            "Turn on protection from the dashboard whenever you're ready. To decrypt HTTPS " +
-                "for inspection later, install the Adwarden CA — it's optional and off by default.",
+            stringResource(R.string.onb_done_body),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(20.dp))
         TextButton(onClick = onInstallCa) {
-            Text("Install Adwarden CA", color = MaterialTheme.colorScheme.primary)
+            Text(stringResource(R.string.onb_install_ca), color = MaterialTheme.colorScheme.primary)
         }
     }
 }

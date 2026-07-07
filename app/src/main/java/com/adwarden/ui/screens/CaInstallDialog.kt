@@ -16,7 +16,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.adwarden.R
 import java.io.ByteArrayInputStream
 import java.security.cert.CertificateFactory
 
@@ -42,7 +44,7 @@ fun CaInstallDialog(certPem: String?, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Install Adwarden CA") },
+        title = { Text(stringResource(R.string.settings_install_ca)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
@@ -52,23 +54,20 @@ fun CaInstallDialog(certPem: String?, onDismiss: () -> Unit) {
                 )
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "What this can decrypt",
+                    stringResource(R.string.ca_what_decrypts),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Since Android 7, apps only trust user-installed CAs if they opt in. " +
-                        "Browsers like Chrome and Firefox do; many apps pin their certificates " +
-                        "and stay opaque. Blocking, logging and PCAP keep working for every app — " +
-                        "only full HTTPS decode is limited to the cooperating subset.",
+                    stringResource(R.string.ca_what_decrypts_body),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (certPem == null) {
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "Preparing certificate…",
+                        stringResource(R.string.ca_preparing),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -89,35 +88,26 @@ fun CaInstallDialog(certPem: String?, onDismiss: () -> Unit) {
                         }
                     }
                 },
-            ) { Text("Install certificate") }
+            ) { Text(stringResource(R.string.ca_install_cert)) }
         },
         dismissButton = {
             TextButton(
                 enabled = certPem != null,
                 onClick = { exportLauncher.launch("adwarden-ca.pem") },
-            ) { Text("Export .pem") }
+            ) { Text(stringResource(R.string.ca_export_pem)) }
         },
     )
 }
 
 /** Guidance tuned to the installer flow on the running Android version. */
-private fun installSteps(): String = when {
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> // 34+
-        "1. Tap Install certificate below.\n" +
-            "2. The system will ask what to install — choose \"CA certificate\".\n" +
-            "3. Confirm the security warning to trust the Adwarden CA.\n" +
-            "If the picker doesn't appear, use Export .pem, then Settings ▸ Security & " +
-            "privacy ▸ More security ▸ Encryption & credentials ▸ Install a certificate ▸ " +
-            "CA certificate, and pick the exported file."
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> // 30–33
-        "1. Tap Install certificate below and choose \"CA certificate\".\n" +
-            "2. Confirm the security warning.\n" +
-            "Otherwise Export .pem and install it via Settings ▸ Security ▸ Encryption & " +
-            "credentials ▸ Install a certificate ▸ CA certificate."
-    else ->
-        "Tap Install certificate and choose \"CA certificate\", or Export .pem and install " +
-            "it from Settings ▸ Security ▸ Install from storage."
-}
+@Composable
+private fun installSteps(): String = stringResource(
+    when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> R.string.ca_steps_34
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> R.string.ca_steps_30
+        else -> R.string.ca_steps_legacy
+    },
+)
 
 private fun pemToDer(pem: String): ByteArray? = runCatching {
     CertificateFactory.getInstance("X.509")

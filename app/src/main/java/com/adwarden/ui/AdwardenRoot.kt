@@ -31,10 +31,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.annotation.StringRes
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
+import com.adwarden.R
 import com.adwarden.ui.screens.AppsScreen
 import com.adwarden.ui.screens.DashboardScreen
 import com.adwarden.ui.screens.FiltersScreen
@@ -42,12 +45,12 @@ import com.adwarden.ui.screens.OnboardingScreen
 import com.adwarden.ui.screens.SettingsScreen
 import com.adwarden.ui.screens.TrafficScreen
 
-private enum class Destination(val label: String, val icon: ImageVector) {
-    DASHBOARD("Dashboard", Icons.Rounded.Shield),
-    APPS("Apps", Icons.Rounded.Apps),
-    TRAFFIC("Traffic", Icons.Rounded.Timeline),
-    FILTERS("Filters", Icons.Rounded.FilterAlt),
-    SETTINGS("Settings", Icons.Rounded.Settings),
+private enum class Destination(@StringRes val labelRes: Int, val icon: ImageVector) {
+    DASHBOARD(R.string.nav_dashboard, Icons.Rounded.Shield),
+    APPS(R.string.nav_apps, Icons.Rounded.Apps),
+    TRAFFIC(R.string.nav_traffic, Icons.Rounded.Timeline),
+    FILTERS(R.string.nav_filters, Icons.Rounded.FilterAlt),
+    SETTINGS(R.string.nav_settings, Icons.Rounded.Settings),
 }
 
 @Composable
@@ -83,11 +86,12 @@ private fun MainScaffold(
         Row(Modifier.fillMaxSize()) {
             NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
                 destinations.forEachIndexed { i, d ->
+                    val label = stringResource(d.labelRes)
                     NavigationRailItem(
                         selected = index == i,
                         onClick = { index = i },
-                        icon = { Icon(d.icon, contentDescription = d.label) },
-                        label = { Text(d.label) },
+                        icon = { Icon(d.icon, contentDescription = label) },
+                        label = { Text(label) },
                         colors = NavigationRailItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                             indicatorColor = MaterialTheme.colorScheme.primaryContainer,
@@ -117,11 +121,12 @@ private fun MainScaffold(
             bottomBar = {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     destinations.forEachIndexed { i, d ->
+                        val label = stringResource(d.labelRes)
                         NavigationBarItem(
                             selected = index == i,
                             onClick = { index = i },
-                            icon = { Icon(d.icon, contentDescription = d.label) },
-                            label = { Text(d.label) },
+                            icon = { Icon(d.icon, contentDescription = label) },
+                            label = { Text(label) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                                 indicatorColor = MaterialTheme.colorScheme.primaryContainer,

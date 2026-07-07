@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -42,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adwarden.MainViewModel
+import com.adwarden.R
 import com.adwarden.RankedItem
 import com.adwarden.ui.components.AdwCard
 import com.adwarden.ui.components.BarChart
@@ -118,24 +120,24 @@ fun DashboardScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("Session")
+        SectionTitle(stringResource(R.string.dash_session))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile(Icons.Rounded.SwapVert, formatCount(stats.packets), "Packets", BrandBlue, Modifier.weight(1f))
-            StatTile(Icons.Rounded.DataUsage, formatBytes(stats.bytes), "Data seen", BrandViolet, Modifier.weight(1f))
+            StatTile(Icons.Rounded.SwapVert, formatCount(stats.packets), stringResource(R.string.dash_packets), BrandBlue, Modifier.weight(1f))
+            StatTile(Icons.Rounded.DataUsage, formatBytes(stats.bytes), stringResource(R.string.dash_data_seen), BrandViolet, Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile(Icons.Rounded.Dns, formatCount(stats.dnsQueries), "DNS queries", BrandCyan, Modifier.weight(1f))
-            StatTile(Icons.Rounded.Block, formatCount(stats.blockedQueries), "Blocked", Warning, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Dns, formatCount(stats.dnsQueries), stringResource(R.string.dash_dns_queries), BrandCyan, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Block, formatCount(stats.blockedQueries), stringResource(R.string.dash_blocked), Warning, Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile(Icons.Rounded.Public, stats.distinctDestinations.toString(), "Destinations", Success, Modifier.weight(1f))
-            StatTile(Icons.Rounded.Shield, formatCount(stats.tcpPackets), "TCP flows", BrandViolet, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Public, stats.distinctDestinations.toString(), stringResource(R.string.dash_destinations), Success, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Shield, formatCount(stats.tcpPackets), stringResource(R.string.dash_tcp_flows), BrandViolet, Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("Throughput")
+        SectionTitle(stringResource(R.string.dash_throughput))
         AdwCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -145,7 +147,7 @@ fun DashboardScreen(
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        " packets/sec",
+                        stringResource(R.string.dash_packets_per_sec),
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 6.dp, bottom = 3.dp),
@@ -154,7 +156,7 @@ fun DashboardScreen(
                 Spacer(Modifier.height(12.dp))
                 if (pps.size < 2) {
                     Text(
-                        if (running) "Sampling…" else "Turn on protection to see live throughput",
+                        if (running) stringResource(R.string.dash_sampling) else stringResource(R.string.dash_throughput_hint),
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -172,12 +174,12 @@ fun DashboardScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("Top destinations")
+        SectionTitle(stringResource(R.string.dash_top_destinations))
         AdwCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(vertical = 6.dp)) {
                 if (topDests.isEmpty()) {
                     Text(
-                        "No traffic captured yet.",
+                        stringResource(R.string.dash_no_traffic),
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp),
@@ -215,24 +217,24 @@ fun DashboardScreen(
             }
         }
         Spacer(Modifier.height(20.dp))
-        SectionTitle("History")
+        SectionTitle(stringResource(R.string.dash_history))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile(Icons.Rounded.Block, formatCount(blockedToday), "Blocked today", Danger, Modifier.weight(1f))
-            StatTile(Icons.Rounded.Shield, formatCount(blockedThisWeek), "Blocked · 7 days", BrandViolet, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Block, formatCount(blockedToday), stringResource(R.string.dash_blocked_today), Danger, Modifier.weight(1f))
+            StatTile(Icons.Rounded.Shield, formatCount(blockedThisWeek), stringResource(R.string.dash_blocked_week), BrandViolet, Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(12.dp))
         AdwCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text(
-                    "Blocked per day",
+                    stringResource(R.string.dash_blocked_per_day),
                     style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
                     color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 if (blockedThisWeek == 0L) {
                     Text(
-                        "No blocks recorded yet. Turn on protection to start building history.",
+                        stringResource(R.string.dash_no_blocks),
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -261,12 +263,12 @@ fun DashboardScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("Top blocked domains")
-        RankedCard(items = topDomains, dotColor = Danger, emptyText = "No domains blocked yet.")
+        SectionTitle(stringResource(R.string.dash_top_blocked_domains))
+        RankedCard(items = topDomains, dotColor = Danger, emptyText = stringResource(R.string.dash_no_domains))
 
         Spacer(Modifier.height(20.dp))
-        SectionTitle("Top blocked apps")
-        RankedCard(items = topApps, dotColor = Warning, emptyText = "No app blocks attributed yet.")
+        SectionTitle(stringResource(R.string.dash_top_blocked_apps))
+        RankedCard(items = topApps, dotColor = Warning, emptyText = stringResource(R.string.dash_no_app_blocks))
 
         Spacer(Modifier.height(16.dp))
     }
@@ -350,9 +352,10 @@ private fun HeroCard(
             .padding(22.dp),
     ) {
         Column(Modifier.fillMaxWidth()) {
+            val stateDesc = if (running) stringResource(R.string.hero_protected) else stringResource(R.string.hero_off)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (running) "Protected" else "Paused",
+                    if (running) stringResource(R.string.hero_protected) else stringResource(R.string.hero_paused),
                     style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
                     color = Color.White.copy(alpha = 0.85f),
                 )
@@ -364,7 +367,7 @@ private fun HeroCard(
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                 ) {
                     Text(
-                        if (running) "Filtering" else "Off",
+                        if (running) stringResource(R.string.hero_filtering) else stringResource(R.string.hero_off),
                         style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
                         color = Color.White,
                     )
@@ -372,14 +375,14 @@ private fun HeroCard(
             }
             Spacer(Modifier.height(18.dp))
             Text(
-                if (running) "Inspecting traffic" else "Protection is off",
+                if (running) stringResource(R.string.hero_inspecting) else stringResource(R.string.hero_protection_off),
                 style = androidx.compose.material3.MaterialTheme.typography.headlineMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                if (running) "Up ${formatDuration(uptimeMs)} · ${formatCount(packets)} packets seen"
-                else "Start to filter and inspect on-device traffic",
+                if (running) stringResource(R.string.hero_uptime, formatDuration(uptimeMs), formatCount(packets))
+                else stringResource(R.string.hero_start_hint),
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                 color = Color.White.copy(alpha = 0.85f),
                 modifier = Modifier.padding(top = 4.dp),
@@ -396,7 +399,7 @@ private fun HeroCard(
                         role = Role.Switch,
                         onValueChange = { onToggle() },
                     )
-                    .semantics { stateDescription = if (running) "Protected" else "Off" }
+                    .semantics { stateDescription = stateDesc }
                     .testTag("protection_toggle"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
@@ -408,7 +411,7 @@ private fun HeroCard(
                     modifier = Modifier.size(22.dp),
                 )
                 Text(
-                    if (running) "Pause protection" else "Turn on protection",
+                    if (running) stringResource(R.string.hero_pause) else stringResource(R.string.hero_turn_on),
                     style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                     color = BrandBlue,
                     modifier = Modifier.padding(start = 8.dp),
@@ -432,7 +435,7 @@ private fun FilteringBanner() {
                 modifier = Modifier.size(20.dp),
             )
             Text(
-                "Allowed traffic is forwarded through the native core; blocked domains and apps are dropped.",
+                stringResource(R.string.filtering_banner),
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                 color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp),
