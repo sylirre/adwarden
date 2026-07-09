@@ -51,21 +51,36 @@ class FilterRepository @Inject constructor(
     /** Serialized engine cache. The name embeds a schema tag so a format change invalidates it. */
     val engineCacheFile: File by lazy { File(context.filesDir, "filter_engine_v$ENGINE_SCHEMA.bin") }
 
-    /** Runtime-downloaded scriptlet resource pack (P4-3), never bundled. */
+    /** Optional user-downloaded scriptlet override pack (P4-3), never bundled. */
     val scriptletPackFile: File by lazy { File(context.filesDir, "scriptlet_resources.json") }
+
+    /** The bundled first-party (MIT) scriptlet pack, extracted from assets so the
+     *  datapath can load it by path. Re-extracted per process so app updates ship. */
+    val builtinScriptletFile: File by lazy {
+        File(context.filesDir, "scriptlet_builtin.json").also { file ->
+            runCatching {
+                context.assets.open("scriptlets_builtin.json").use { input ->
+                    file.outputStream().use { input.copyTo(it) }
+                }
+            }
+        }
+    }
 
     fun listFile(id: String): File = File(listDir, "$id.txt")
 
     fun hasCompiledEngine(): Boolean = engineCacheFile.exists()
 
     /**
-     * Path to the scriptlet pack for the datapath's engine load, or `""` when no
-     * pack has been downloaded (the native side treats empty as "no pack"). The
-     * pack is loaded whenever present; the actual scriptlet injection is gated by
-     * the separate "Run scriptlets" config switch (P4-4).
+     * Path to the scriptlet pack for the datapath's engine load, or `""` if none.
+     * A user-downloaded override pack wins; otherwise the bundled first-party pack
+     * is used, so scriptlets work out of the box. The pack is loaded whenever
+     * present; injection itself is gated by the "Run scriptlets" switch (P4-4).
      */
-    fun scriptletPackPath(): String =
-        if (scriptletPackFile.exists()) scriptletPackFile.absolutePath else ""
+    fun scriptletPackPath(): String {
+        if (scriptletPackFile.exists()) return scriptletPackFile.absolutePath
+        val builtin = builtinScriptletFile
+        return if (builtin.exists()) builtin.absolutePath else ""
+    }
 
     suspend fun scriptletPackOnce(): ScriptletPack? = filterDao.scriptletPackOnce()
 
@@ -179,14 +194,16 @@ class FilterRepository @Inject constructor(
         // v2: cosmetic rules retained in the cache (P4) — invalidates network-only caches.
         private const val ENGINE_SCHEMA = 2
 
-        // Scriptlet resource pack (P4-3), disabled by default (scriptlets are an
-        // opt-in advanced feature). Brave's adblock-resources is the canonical
-        // pack for the `adblock` crate — a JSON array of resources, base64 content.
-        // GPL scriptlet code is fetched at runtime, never bundled in the APK.
+        // Optional user-configurable scriptlet OVERRIDE pack (P4-3): a runtime-
+        // downloaded `adblock`-crate resource JSON that replaces the bundled
+        // first-party pack when set + enabled (e.g. a full uBO/AdGuard set the user
+        // supplies). Empty/disabled by default — the built-in MIT pack in
+        // assets/scriptlets_builtin.json is the working default, so scriptlets fire
+        // out of the box with no download and no bundled GPL code.
         val DEFAULT_SCRIPTLET_PACK = ScriptletPack(
-            id = "brave_scriptlets",
-            name = "Brave adblock-resources (scriptlets)",
-            url = "https://raw.githubusercontent.com/brave/adblock-resources/master/dist/resources.json",
+            id = "override",
+            name = "Custom scriptlet pack",
+            url = "",
             enabled = false,
         )
         private const val PERIODIC_WORK = "adwarden_filter_sync_periodic"

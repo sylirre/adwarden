@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adwarden.data.CaRepository
 import com.adwarden.data.CaptureRepository
-import com.adwarden.data.FilterRepository
 import com.adwarden.data.StatsRepository
 import com.adwarden.data.settings.SettingsRepository
 import com.adwarden.data.settings.ThemeMode
@@ -31,7 +30,6 @@ data class RankedItem(val label: String, val count: Long)
 class MainViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val ca: CaRepository,
-    private val filters: FilterRepository,
     captureRepository: CaptureRepository,
     statsRepository: StatsRepository,
     inventory: AppInventory,
@@ -152,11 +150,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun setCosmeticScriptlets(value: Boolean) {
-        viewModelScope.launch {
-            settings.setCosmeticScriptlets(value)
-            // Enabling scriptlets fetches the (runtime, unbundled) resource pack.
-            if (value) filters.setScriptletPackEnabled(true)
-        }
+        // The built-in scriptlet pack ships in the APK, so no download is needed;
+        // the datapath already loads it. Injection is gated by this switch (P4-4).
+        viewModelScope.launch { settings.setCosmeticScriptlets(value) }
     }
 
     /** Ensure the CA exists and publish its cert PEM for the install wizard. */

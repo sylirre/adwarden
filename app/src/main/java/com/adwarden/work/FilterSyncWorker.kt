@@ -35,8 +35,9 @@ class FilterSyncWorker @AssistedInject constructor(
                 Log.w(TAG, "sync failed for ${subscription.id}", error)
             }
         }
-        // Fetch the scriptlet resource pack when enabled (P4-3), never bundled.
-        repository.scriptletPackOnce()?.takeIf { it.enabled }?.let { pack ->
+        // Fetch the optional scriptlet override pack when configured (P4-3). The
+        // built-in first-party pack ships in the APK and needs no download.
+        repository.scriptletPackOnce()?.takeIf { it.enabled && it.url.isNotBlank() }?.let { pack ->
             runCatching { syncPack(pack) }.onFailure { error ->
                 Log.w(TAG, "scriptlet pack sync failed", error)
             }
