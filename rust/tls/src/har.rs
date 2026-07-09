@@ -68,7 +68,7 @@ pub struct HttpResponse {
 }
 
 /// How a message body is delimited on the wire.
-enum Framing {
+pub(crate) enum Framing {
     /// `Content-Length`: this many bytes remain.
     Length(usize),
     /// `Transfer-Encoding: chunked`.
@@ -86,7 +86,7 @@ struct BodyReader {
     truncated: bool,
 }
 
-enum Step {
+pub(crate) enum Step {
     NeedMore,
     Done,
     Error,
@@ -154,16 +154,21 @@ enum ChunkState {
     Trailer(Vec<u8>),
 }
 
-struct ChunkReader {
+pub(crate) struct ChunkReader {
     state: ChunkState,
 }
 
 impl ChunkReader {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ChunkReader { state: ChunkState::Size(Vec::new()) }
     }
 
-    fn consume(
+    /// Decode as much of `buf` as belongs to the chunked body, draining what it
+    /// consumes and appending decoded data bytes (sans chunk framing) to
+    /// `captured`. Used both by the HAR tap (accumulating a whole body) and by the
+    /// rewriter, which passes a fresh `captured` per feed to recover just that
+    /// feed's decoded segment for re-chunking (P4-2).
+    pub(crate) fn consume(
         &mut self,
         buf: &mut Vec<u8>,
         captured: &mut Vec<u8>,
@@ -494,28 +499,35 @@ fn take_head(buf: &mut Vec<u8>) -> HeadStep {
     };
     let block: Vec<u8> = buf.drain(..end).collect();
     // `end` includes the trailing CRLFCRLF; split off the header lines.
-    let body = &block[..block.len() - 4];
-    let mut lines = split_crlf_lines(body);
-    let Some(start_line) = lines.next() else { return HeadStep::Error };
+    match parse_head_fields(&block[..block.len() - 4]) {
+        Some((start_line, headers)) => HeadStep::Head(ParsedHead { start_line, headers, size: end }),
+        None => HeadStep::Error,
+    }
+}
+
+/// Parse a header block's fields (the bytes up to but excluding the terminating
+/// CRLFCRLF) into `(start_line, headers)`. Returns `None` on a malformed line.
+/// Shared by [`take_head`] and the HTTP rewriter (P4-2).
+pub(crate) fn parse_head_fields(fields: &[u8]) -> Option<(Vec<u8>, Vec<(String, String)>)> {
+    let mut lines = split_crlf_lines(fields);
+    let start_line = lines.next()?;
     let mut headers = Vec::new();
     for line in lines {
         if line.is_empty() {
             continue;
         }
-        let Some(colon) = line.iter().position(|&b| b == b':') else {
-            return HeadStep::Error;
-        };
+        let colon = line.iter().position(|&b| b == b':')?;
         let name = String::from_utf8_lossy(&line[..colon]).trim().to_string();
         let value = String::from_utf8_lossy(&line[colon + 1..]).trim().to_string();
         if !name.is_empty() {
             headers.push((name, value));
         }
     }
-    HeadStep::Head(ParsedHead { start_line: start_line.to_vec(), headers, size: end })
+    Some((start_line.to_vec(), headers))
 }
 
 /// Index just past the first `\r\n\r\n`, or None if not present.
-fn find_header_end(buf: &[u8]) -> Option<usize> {
+pub(crate) fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
@@ -529,7 +541,7 @@ fn split_crlf_lines(body: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-fn parse_request_line(line: &[u8]) -> Option<(String, String, String)> {
+pub(crate) fn parse_request_line(line: &[u8]) -> Option<(String, String, String)> {
     let text = std::str::from_utf8(line).ok()?;
     let mut parts = text.split(' ');
     let method = parts.next()?.to_string();
@@ -541,7 +553,7 @@ fn parse_request_line(line: &[u8]) -> Option<(String, String, String)> {
     Some((method, target, version))
 }
 
-fn parse_status_line(line: &[u8]) -> Option<(String, u16, String)> {
+pub(crate) fn parse_status_line(line: &[u8]) -> Option<(String, u16, String)> {
     let text = std::str::from_utf8(line).ok()?;
     let mut parts = text.splitn(3, ' ');
     let version = parts.next()?.to_string();
@@ -554,7 +566,7 @@ fn parse_status_line(line: &[u8]) -> Option<(String, u16, String)> {
 }
 
 /// Body framing for a request: chunked or a positive Content-Length, else none.
-fn request_framing(headers: &[(String, String)]) -> Option<Framing> {
+pub(crate) fn request_framing(headers: &[(String, String)]) -> Option<Framing> {
     if is_chunked(headers) {
         return Some(Framing::Chunked(ChunkReader::new()));
     }
@@ -565,7 +577,7 @@ fn request_framing(headers: &[(String, String)]) -> Option<Framing> {
 }
 
 /// Body framing for a response, honoring the no-body cases (1xx/204/304, HEAD).
-fn response_framing(status: u16, method_is_head: bool, headers: &[(String, String)]) -> Option<Framing> {
+pub(crate) fn response_framing(status: u16, method_is_head: bool, headers: &[(String, String)]) -> Option<Framing> {
     if method_is_head || status == 204 || status == 304 || (100..=199).contains(&status) {
         return None;
     }
@@ -579,17 +591,17 @@ fn response_framing(status: u16, method_is_head: bool, headers: &[(String, Strin
     }
 }
 
-fn is_chunked(headers: &[(String, String)]) -> bool {
+pub(crate) fn is_chunked(headers: &[(String, String)]) -> bool {
     header(headers, "transfer-encoding").map_or(false, |v| {
         v.split(',').any(|t| t.trim().eq_ignore_ascii_case("chunked"))
     })
 }
 
-fn content_length(headers: &[(String, String)]) -> Option<usize> {
+pub(crate) fn content_length(headers: &[(String, String)]) -> Option<usize> {
     header(headers, "content-length").and_then(|v| v.trim().parse().ok())
 }
 
-fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(name))

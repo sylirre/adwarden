@@ -95,6 +95,9 @@ struct TcpUpstream {
     /// fires exactly once even though a failed splice stays closed across the
     /// several service passes before the flow is finally torn down.
     pin_reported: bool,
+    /// Set once the cosmetic payload has been handed to the splice (P4-2), so we
+    /// compute it from the engine exactly once, right after the SNI is learned.
+    cosmetic_set: bool,
 }
 
 struct UdpSession {
@@ -165,6 +168,11 @@ pub struct Forwarder {
     log_open: bool,
     /// Coarse allowed-flow telemetry accumulated this flush window (P3-4).
     coarse: CoarseAccum,
+    /// Cosmetic element hiding on (P4): inject hostname CSS into `text/html` on
+    /// inspected flows. Applies to every inspected app.
+    cosmetic_element_hiding: bool,
+    /// Cosmetic scriptlet injection on (P4): requires element hiding + a loaded pack.
+    cosmetic_scriptlets: bool,
 }
 
 const PCAP_SNAPLEN: u32 = 65_535;
@@ -204,6 +212,8 @@ impl Forwarder {
             stats: ForwarderStats::default(),
             log_open: config.log_open,
             coarse: CoarseAccum::default(),
+            cosmetic_element_hiding: config.cosmetic_element_hiding,
+            cosmetic_scriptlets: config.cosmetic_scriptlets,
         }
     }
 
@@ -284,6 +294,44 @@ impl Forwarder {
     /// full immediately (the command that carries this also wakes the poll).
     pub fn set_log_open(&mut self, open: bool) {
         self.log_open = open;
+    }
+
+    /// Set the cosmetic-filtering mode (P4). Takes effect on flows opened after
+    /// this; live flows keep the payload they were provisioned with (one host per
+    /// splice). Enforcement and the fast-path are unaffected.
+    pub fn set_cosmetic(&mut self, element_hiding: bool, scriptlets: bool) {
+        self.cosmetic_element_hiding = element_hiding;
+        self.cosmetic_scriptlets = scriptlets;
+    }
+
+    /// Hand the cosmetic payload to a splice once its SNI host is known (P4-2).
+    /// Computes CSS/JS from the engine here so `rust/tls` needs no filter
+    /// dependency; called exactly once per flow (guarded by `cosmetic_set`).
+    /// Always sets a payload once the host is known — empty (a no-op passthrough)
+    /// when the engine is absent or the feature is off — so the rewriter, which
+    /// holds nothing until provisioned, is never left waiting.
+    fn provision_cosmetics(&mut self, id: FlowId) {
+        let host = match self.tcp.get(&id) {
+            Some(up) if !up.cosmetic_set => match up.mitm.as_ref().and_then(|m| m.host()) {
+                Some(h) => h.to_string(),
+                None => return, // SNI not learned yet; retry next pump
+            },
+            _ => return,
+        };
+        let (css, js) = match self.engine.as_ref() {
+            Some(engine) if self.cosmetic_element_hiding => {
+                let css = engine.cosmetic_css(&host);
+                let js = if self.cosmetic_scriptlets { engine.scriptlets_js(&host) } else { String::new() };
+                (css, js)
+            }
+            _ => (String::new(), String::new()),
+        };
+        if let Some(up) = self.tcp.get_mut(&id) {
+            if let Some(mitm) = up.mitm.as_mut() {
+                mitm.set_cosmetic(css, js);
+            }
+            up.cosmetic_set = true;
+        }
     }
 
     /// Whether an allowed flow owned by `uid` should be coalesced into the coarse
@@ -643,6 +691,7 @@ impl Forwarder {
                         uid,
                         server,
                         pin_reported: false,
+                        cosmetic_set: false,
                     },
                 );
             }
@@ -737,6 +786,11 @@ impl Forwarder {
             Some(mitm) => mitm.pump(),
             None => return,
         };
+        // The pump may have just learned the SNI; provision cosmetics before its
+        // decrypted output is drained toward the app (P4-2). This runs before any
+        // response byte can exist (the upstream session is created lazily on the
+        // same pump SNI is learned, so it hasn't handshaked yet).
+        self.provision_cosmetics(id);
         if let Some(up) = self.tcp.get_mut(&id) {
             up.to_upstream.extend_from_slice(&io.to_upstream);
             up.to_app.extend_from_slice(&io.to_app);

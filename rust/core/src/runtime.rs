@@ -54,6 +54,9 @@ pub enum Command {
     /// Set whether the live traffic log / a capture is open (P3-4). Drives the
     /// coalescing fast-path and the datapath's wakeup cadence.
     SetLogOpen(bool),
+    /// Set the cosmetic-filtering mode (P4): element hiding and/or scriptlet
+    /// injection into `text/html` on inspected flows.
+    SetCosmetic { element_hiding: bool, scriptlets: bool },
 }
 
 pub struct Session {
@@ -237,6 +240,9 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::StopPcap => forwarder.stop_pcap(),
             Command::ExportHar { fd } => forwarder.export_har(fd),
             Command::SetLogOpen(open) => forwarder.set_log_open(open),
+            Command::SetCosmetic { element_hiding, scriptlets } => {
+                forwarder.set_cosmetic(element_hiding, scriptlets)
+            }
         }
     }
 }

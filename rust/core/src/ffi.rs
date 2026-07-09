@@ -33,7 +33,9 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 /// v3: added `nativeExportHar` for HAR 1.2 export of decrypted flows (P2-3).
 /// v4: added `nativeSetLogOpen` + the coarse aggregate event (KIND_COARSE) for
 ///     the enforcement-safe battery fast-path (P3-4).
-pub const ABI_VERSION: i32 = 4;
+/// v5: added the cosmetic-filtering config keys (`cosmetic_element_hiding`,
+///     `cosmetic_scriptlets`) carried by `nativeUpdateConfig` (P4-2).
+pub const ABI_VERSION: i32 = 5;
 
 #[no_mangle]
 pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
@@ -149,6 +151,10 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateConfig<'loc
         let parsed = Config::from_json(&config_json);
         if let Some(session) = unsafe { session(handle) } {
             session.send(Command::BlockEncryptedDns(parsed.block_encrypted_dns));
+            session.send(Command::SetCosmetic {
+                element_hiding: parsed.cosmetic_element_hiding,
+                scriptlets: parsed.cosmetic_scriptlets,
+            });
         }
     }));
 }

@@ -32,8 +32,10 @@ use rustls::sign::CertifiedKey;
 
 mod har;
 mod mitm;
+mod rewriter;
 pub use har::{write_har, HttpTransaction};
 pub use mitm::{MitmIo, TlsMitm};
+pub use rewriter::HttpRewriter;
 
 /// Build the rustls client config used to re-originate intercepted flows to the
 /// real upstream, verifying the server against the bundled Mozilla root store

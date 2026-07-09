@@ -32,6 +32,15 @@ pub struct Config {
     /// [`crate::runtime::Command::SetLogOpen`]; the start value is just the seed.
     #[serde(default)]
     pub log_open: bool,
+    /// Element hiding (P4): inject hostname cosmetic CSS into `text/html` on
+    /// inspected flows. Off leaves today's behavior exactly. Driven live via
+    /// [`crate::runtime::Command::SetCosmetic`].
+    #[serde(default)]
+    pub cosmetic_element_hiding: bool,
+    /// Scriptlet injection (P4): inject scriptlet JS. Requires
+    /// `cosmetic_element_hiding` and a loaded scriptlet resource pack. Off by default.
+    #[serde(default)]
+    pub cosmetic_scriptlets: bool,
 }
 
 impl Default for Config {
@@ -44,6 +53,8 @@ impl Default for Config {
             ca_cert_pem: None,
             ca_key_pem: None,
             log_open: false,
+            cosmetic_element_hiding: false,
+            cosmetic_scriptlets: false,
         }
     }
 }

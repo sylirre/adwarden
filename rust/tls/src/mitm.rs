@@ -25,6 +25,7 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 
 use crate::har::{HttpTap, HttpTransaction};
+use crate::rewriter::HttpRewriter;
 
 /// One pump's worth of output: TLS bytes to write toward each peer, plus a
 /// flag telling the caller to tear the flow down.
@@ -63,6 +64,10 @@ pub struct TlsMitm {
     cert_rejected: bool,
     /// Observes the decrypted plaintext both ways and yields HAR transactions.
     tap: HttpTap,
+    /// Actively rewrites the plaintext for cosmetic filtering (P4-2): forces
+    /// `identity` on requests and injects CSS/JS into `text/html` responses. A
+    /// no-op passthrough until [`set_cosmetic`](Self::set_cosmetic) turns it on.
+    rewriter: HttpRewriter,
 }
 
 impl TlsMitm {
@@ -83,7 +88,15 @@ impl TlsMitm {
             failed: false,
             cert_rejected: false,
             tap: HttpTap::new(),
+            rewriter: HttpRewriter::new(),
         })
+    }
+
+    /// Provision the cosmetic-filtering payload for this flow (P4-2). The datapath
+    /// computes it from the filter engine once [`host`](Self::host) is known and
+    /// hands it in; empty strings mean "off" (pure identity passthrough).
+    pub fn set_cosmetic(&mut self, css: String, js: String) {
+        self.rewriter.set_cosmetic(css, js);
     }
 
     /// The intercepted SNI host, once the ClientHello has been parsed.
@@ -223,25 +236,29 @@ impl TlsMitm {
     fn cross_plaintext(&mut self) {
         let Some(client) = self.client.as_mut() else { return };
         let mut buf = [0u8; 16 * 1024];
-        // app -> upstream (the HTTP request stream)
+        // app -> upstream (the HTTP request stream). The tap always sees the raw
+        // bytes (HAR reflects true traffic); the rewriter's output is what we
+        // actually forward — identical to the input unless cosmetics are on.
         loop {
             match self.server.reader().read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     self.tap.feed_request(&buf[..n]);
-                    let _ = client.writer().write_all(&buf[..n]);
+                    let out = self.rewriter.feed_request(&buf[..n]);
+                    let _ = client.writer().write_all(&out);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
             }
         }
-        // upstream -> app (the HTTP response stream)
+        // upstream -> app (the HTTP response stream).
         loop {
             match client.reader().read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     self.tap.feed_response(&buf[..n]);
-                    let _ = self.server.writer().write_all(&buf[..n]);
+                    let out = self.rewriter.feed_response(&buf[..n]);
+                    let _ = self.server.writer().write_all(&out);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
@@ -377,6 +394,57 @@ mod tests {
         assert_eq!(txns[0].response.status, 200);
         assert_eq!(txns[0].response.body, b"hi");
         assert_eq!(txns[0].host.as_deref(), Some(HOST));
+    }
+
+    #[test]
+    fn injects_cosmetics_while_har_sees_the_original() {
+        // The app receives the rewritten (injected) HTML, but the HAR tap still
+        // captures the original upstream body — the P4-2 coexistence contract.
+        let our_ca = Arc::new(CertAuthority::generate().unwrap());
+        let upstream_ca = Arc::new(CertAuthority::generate().unwrap());
+
+        let mut mitm =
+            TlsMitm::new(our_ca.server_config().unwrap(), client_trusting(&upstream_ca)).unwrap();
+        let mut app = ClientConnection::new(
+            client_trusting(&our_ca),
+            ServerName::try_from(HOST).unwrap(),
+        )
+        .unwrap();
+        let mut upstream = ServerConnection::new(upstream_ca.server_config().unwrap()).unwrap();
+
+        for _ in 0..30 {
+            step(&mut app, &mut upstream, &mut mitm);
+            if !app.is_handshaking() && !upstream.is_handshaking() {
+                break;
+            }
+        }
+        assert_eq!(mitm.host(), Some(HOST));
+        // Provision cosmetics once the host is known (as the datapath does).
+        mitm.set_cosmetic(".ad{display:none!important;}".to_string(), String::new());
+
+        app.writer().write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").unwrap();
+        let body = "<html><head></head><body>hi</body></html>";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        for _ in 0..6 {
+            step(&mut app, &mut upstream, &mut mitm);
+        }
+        upstream.writer().write_all(resp.as_bytes()).unwrap();
+        for _ in 0..6 {
+            step(&mut app, &mut upstream, &mut mitm);
+        }
+
+        let mut got = Vec::new();
+        let _ = app.reader().read_to_end(&mut got);
+        let got = String::from_utf8_lossy(&got);
+        assert!(got.contains("<head><!--adw-cosmetic-->"), "app got injected HTML: {got}");
+        assert!(got.contains(".ad{display:none!important;}"), "css delivered: {got}");
+
+        let txns = mitm.take_transactions();
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].response.body, body.as_bytes(), "HAR keeps the original body");
     }
 
     #[test]
