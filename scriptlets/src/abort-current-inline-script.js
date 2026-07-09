@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Adwarden
+
 function abortCurrentInlineScript(chain, needle) {
     if ( typeof chain !== 'string' || chain === '' ) { return; }
     var owner = window;

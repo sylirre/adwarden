@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! The TLS man-in-the-middle splice for a single intercepted flow.
 //!
 //! A [`TlsMitm`] terminates the app's TLS with a leaf minted for the SNI it

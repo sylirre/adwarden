@@ -30,8 +30,8 @@ bridge (`NativeCore` / `NativeBridge`).
 
 Kotlin · Jetpack Compose · Material 3 · Hilt · Room · DataStore · WorkManager ·
 OkHttp · `minSdk 30` (Android 11) · `targetSdk 36` (Android 16). Native core:
-Rust (smoltcp / adblock-rust / mio / socket2 / pcap-file) — all permissively
-licensed for a closed-source product.
+Rust (smoltcp / adblock-rust / mio / socket2 / pcap-file) — all under
+GPLv3-compatible licenses (see [License](#license)).
 
 ### Project structure
 
@@ -79,3 +79,46 @@ adb install -r -t app/build/outputs/apk/debug/app-debug.apk
 Then launch, complete onboarding, and tap **Turn on protection** (accept the VPN
 consent). Browse to see the Traffic log and Dashboard populate, toggle a
 subscription on Filters, or block an app on Apps.
+
+## License
+
+Adwarden is free software, licensed under the **GNU General Public License,
+version 3 or (at your option) any later version** (`GPL-3.0-or-later`). The full
+text is in [`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Sylirre
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the Free
+    Software Foundation, either version 3 of the License, or (at your option)
+    any later version.
+
+    This program is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+    FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+    more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program. If not, see <https://www.gnu.org/licenses/>.
+
+### Third-party components
+
+Every dependency shipped in the app is GPLv3-compatible:
+
+- **Android/Kotlin stack** (AndroidX, Jetpack Compose, Material 3, Hilt/Dagger,
+  Room, DataStore, WorkManager, OkHttp, Kotlin stdlib/coroutines) — Apache-2.0.
+- **Rust core crates** — permissive (MIT / BSD-3-Clause / ISC / 0BSD /
+  Unicode-3.0 / CDLA-Permissive-2.0) or Apache-2.0, with two weak-copyleft
+  cases: **adblock-rust** (MPL-2.0) and **ring**'s BoringSSL-derived code
+  (Apache-2.0 / ISC).
+
+GPLv3 (rather than GPLv2) is the required copyleft here because several
+dependencies are Apache-2.0, which is compatible with GPLv3 but not GPLv2.
+MPL-2.0 files (from `adblock-rust`) stay under the MPL; distributing them as
+part of a GPL-licensed larger work is expressly permitted by MPL-2.0 §3.3.
+Test-only tooling that is not distributed with the app (e.g. JUnit, EPL-1.0)
+does not affect the license of the shipped binary.
+
+The built-in scriptlet pack under [`scriptlets/`](scriptlets/) is additionally
+made available under the MIT License (see `scriptlets/README.md`); MIT is
+GPL-compatible, so it may be used under either license.

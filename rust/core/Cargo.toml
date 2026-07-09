@@ -3,6 +3,7 @@ name = "adwarden-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "adwarden_core"

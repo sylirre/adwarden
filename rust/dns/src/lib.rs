@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Minimal DNS wire handling for the sinkhole.
 //!
 //! Parses the header and first question of a query, and synthesizes answers to

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! adblock-rust engine wrapper.
 //!
 //! Compiles filter lists (ABP/uBO "standard" syntax and hosts files) plus

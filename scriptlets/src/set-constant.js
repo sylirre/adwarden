@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Adwarden
+
 function setConstant(chain, cvalue) {
     if ( typeof chain !== 'string' || chain === '' ) { return; }
     var value;

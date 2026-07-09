@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! The upcall surface into Kotlin (`NativeBridge`).
 //!
 //! Holds a `JavaVM` plus a global reference to the Kotlin `NativeBridge`

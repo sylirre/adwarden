@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! UDP datagram parsing and reply-packet construction.
 //!
 //! UDP is not run through smoltcp; the core keeps a small NAT table of

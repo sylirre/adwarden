@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! The datapath thread and its lifecycle.
 //!
 //! A single thread owns an mio poll loop over the TUN fd, a control waker, and

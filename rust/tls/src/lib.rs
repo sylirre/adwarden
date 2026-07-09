@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Runtime certificate authority for TLS interception (P2).
 //!
 //! Adwarden mints a private root CA on first run. The user installs it (the

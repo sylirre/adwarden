@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! pcapng writer for the TUN-boundary capture tap.
 //!
 //! Frames are raw IP packets (LINKTYPE_RAW / DLT_RAW = 101) since the tunnel has

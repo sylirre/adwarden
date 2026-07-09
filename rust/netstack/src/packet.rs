@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Best-effort IPv4/IPv6 header decoding, mirroring the P0 Kotlin
 //! `PacketDecoder`. Extension-header walking and fragment reassembly are the
 //! job of the smoltcp stack (P1-A); this only reads the leading headers to

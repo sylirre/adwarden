@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! smoltcp-backed TCP proxy.
 //!
 //! Apps route all traffic into the TUN, so packets arrive addressed to real

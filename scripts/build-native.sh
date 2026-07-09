@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Sylirre
+
 #
 # Build the Adwarden Rust native core (libadwarden_core.so) for every Android
 # ABI and drop the artifacts into app/src/main/jniLibs/<abi>/.

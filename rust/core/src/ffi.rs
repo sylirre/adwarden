@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! JNI entry points (`Java_com_adwarden_core_NativeCore_*`).
 //!
 //! Every function wraps its body in `catch_unwind`: a Rust panic unwinding

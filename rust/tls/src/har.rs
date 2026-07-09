@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Cleartext HTTP capture off intercepted flows, exported as HAR 1.2 (P2-3).
 //!
 //! For a flow being TLS-intercepted, [`crate::TlsMitm`] decrypts both directions

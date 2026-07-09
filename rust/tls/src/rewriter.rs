@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Active HTTP/1.1 rewriter for cosmetic filtering (P4-2).
 //!
 //! Where [`crate::har::HttpTap`] passively parses the decrypted plaintext for HAR

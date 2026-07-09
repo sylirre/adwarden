@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! An in-memory smoltcp `phy::Device` for the tunnel.
 //!
 //! The datapath thread feeds inbound IP packets (read off the TUN fd) into

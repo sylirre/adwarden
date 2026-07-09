@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Batched event encoding for the Rust -> Kotlin upcall.
 //!
 //! Events are accumulated on the datapath thread and flushed as one little-

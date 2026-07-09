@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Transparent forwarding: relays intercepted flows to real upstream servers
 //! over `protect()`ed sockets so allowed traffic reaches the internet instead of
 //! being black-holed.

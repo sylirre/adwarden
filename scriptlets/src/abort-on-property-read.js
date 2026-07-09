@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Adwarden
+
 function abortOnPropertyRead(chain) {
     if ( typeof chain !== 'string' || chain === '' ) { return; }
     var rid = Math.random().toString(36).slice(2);

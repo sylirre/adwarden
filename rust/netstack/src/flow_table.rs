@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! A capacity-bounded, LRU-evicting map keyed by the connection 5-tuple.
 //!
 //! P1-A caches the per-flow upstream socket here; P1-D caches the resolved UID

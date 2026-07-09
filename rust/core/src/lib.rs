@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Sylirre
+
 //! Adwarden native core — the JNI surface loaded by the Android app as
 //! `libadwarden_core.so`.
 //!

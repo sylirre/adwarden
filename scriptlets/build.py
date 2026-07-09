@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Adwarden
+
 """Assemble the first-party scriptlet resource pack (P4-3).
 
 Reads the MIT-licensed scriptlet sources in src/ and emits a JSON array of
