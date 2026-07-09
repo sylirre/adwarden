@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adwarden.data.CaRepository
 import com.adwarden.data.CaptureRepository
+import com.adwarden.data.FilterRepository
 import com.adwarden.data.StatsRepository
 import com.adwarden.data.settings.SettingsRepository
 import com.adwarden.data.settings.ThemeMode
@@ -30,6 +31,7 @@ data class RankedItem(val label: String, val count: Long)
 class MainViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val ca: CaRepository,
+    private val filters: FilterRepository,
     captureRepository: CaptureRepository,
     statsRepository: StatsRepository,
     inventory: AppInventory,
@@ -59,6 +61,14 @@ class MainViewModel @Inject constructor(
     val interceptTls: StateFlow<Boolean> = settings.settings
         .map { it.interceptTls }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.interceptTls)
+
+    val cosmeticElementHiding: StateFlow<Boolean> = settings.settings
+        .map { it.cosmeticElementHiding }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.cosmeticElementHiding)
+
+    val cosmeticScriptlets: StateFlow<Boolean> = settings.settings
+        .map { it.cosmeticScriptlets }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.cosmeticScriptlets)
 
     // The interception CA cert (PEM), loaded lazily when the install wizard opens.
     // Null until generated/loaded.
@@ -129,6 +139,23 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             settings.setInterceptTls(value)
             if (value) _caCertPem.value = ca.ensureCa()?.certPem
+        }
+    }
+
+    fun setCosmeticElementHiding(value: Boolean) {
+        viewModelScope.launch {
+            settings.setCosmeticElementHiding(value)
+            // Scriptlets are meaningless without element hiding — keep them
+            // consistent so the native side never gets scriptlets-without-hiding.
+            if (!value) settings.setCosmeticScriptlets(false)
+        }
+    }
+
+    fun setCosmeticScriptlets(value: Boolean) {
+        viewModelScope.launch {
+            settings.setCosmeticScriptlets(value)
+            // Enabling scriptlets fetches the (runtime, unbundled) resource pack.
+            if (value) filters.setScriptletPackEnabled(true)
         }
     }
 

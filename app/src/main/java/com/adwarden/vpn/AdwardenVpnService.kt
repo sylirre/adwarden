@@ -347,17 +347,22 @@ class AdwardenVpnService : VpnService() {
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         serviceScope = scope
 
-        // Push the block-encrypted-DNS toggle to the core on change.
+        // Push the live-config toggles (block-encrypted-DNS + cosmetic filtering)
+        // to the core on change, coalesced into a single update.
         scope.launch {
             settings.settings
-                .map { it.blockEncryptedDns }
+                .map { Triple(it.blockEncryptedDns, it.cosmeticElementHiding, it.cosmeticScriptlets) }
                 .distinctUntilChanged()
-                .collect { block ->
+                .collect { (block, hiding, scriptlets) ->
                     val handle = nativeHandle
                     if (handle != 0L) {
                         NativeCore.nativeUpdateConfig(
                             handle,
-                            JSONObject().put("block_encrypted_dns", block).toString(),
+                            JSONObject()
+                                .put("block_encrypted_dns", block)
+                                .put("cosmetic_element_hiding", hiding)
+                                .put("cosmetic_scriptlets", scriptlets)
+                                .toString(),
                         )
                     }
                 }
@@ -496,10 +501,22 @@ class AdwardenVpnService : VpnService() {
         // changes are pushed live by observeSettings(); TLS interception is a
         // start-time setting (the native factory is built at session start), so
         // toggling it takes effect on the next VPN start / re-establish.
-        data class Cfg(val block: Boolean, val material: CaMaterial?, val requested: Boolean)
+        data class Cfg(
+            val block: Boolean,
+            val material: CaMaterial?,
+            val requested: Boolean,
+            val hiding: Boolean,
+            val scriptlets: Boolean,
+        )
         val cfg = runBlocking {
             val s = settings.settings.first()
-            Cfg(s.blockEncryptedDns, if (s.interceptTls) ca.ensureCa() else null, s.interceptTls)
+            Cfg(
+                s.blockEncryptedDns,
+                if (s.interceptTls) ca.ensureCa() else null,
+                s.interceptTls,
+                s.cosmeticElementHiding,
+                s.cosmeticScriptlets,
+            )
         }
         if (cfg.requested && cfg.material == null) {
             Log.w(TAG, "TLS interception enabled but CA unavailable; starting without it")
@@ -508,6 +525,8 @@ class AdwardenVpnService : VpnService() {
             put("mtu", MTU)
             put("block_encrypted_dns", cfg.block)
             put("dns_servers", JSONArray(UPSTREAM_DNS))
+            put("cosmetic_element_hiding", cfg.hiding)
+            put("cosmetic_scriptlets", cfg.scriptlets)
             cfg.material?.let {
                 put("intercept_tls", true)
                 put("ca_cert_pem", it.certPem)

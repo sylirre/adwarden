@@ -106,6 +106,13 @@
     <string name="settings_install_ca_sub">Доверьте корневому сертификату, чтобы работала расшифровка.</string>
     <string name="settings_nonroot_limits">Ограничения без root</string>
     <string name="settings_nonroot_limits_body">Без root Android позволяет расшифровывать только приложения, доверяющие пользовательским сертификатам (например, Chrome). Блокировка, журнал и PCAP работают для всех приложений.</string>
+    <string name="settings_cosmetic_filtering">Косметическая фильтрация</string>
+    <string name="settings_hide_ad_elements">Скрывать элементы рекламы</string>
+    <string name="settings_hide_ad_elements_sub">Внедряет CSS, чтобы скрыть рекламные блоки, пережившие сетевую блокировку, в проверяемых приложениях.</string>
+    <string name="settings_run_scriptlets">Запускать скриптлеты</string>
+    <string name="settings_run_scriptlets_sub">Для опытных: внедряет JavaScript на страницы для обхода антиадблока и рекламных скриптов. Загружает пакет скриптлетов.</string>
+    <string name="settings_cosmetic_requires">Требуется проверка</string>
+    <string name="settings_cosmetic_requires_body">Косметическая фильтрация работает только в приложениях с включённой проверкой HTTPS (и установленным ЦС Adwarden) — Chrome и Firefox. Другие приложения не затрагиваются.</string>
     <string name="settings_system_integration">Интеграция с системой</string>
     <string name="settings_always_on">Постоянная VPN</string>
     <string name="settings_always_on_sub">Откройте настройки VPN Android, чтобы Adwarden был всегда подключён и при желании блокировал трафик без VPN.</string>

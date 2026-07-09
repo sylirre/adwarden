@@ -115,6 +115,13 @@
     <string name="settings_install_ca_sub">Trust the root certificate so decryption can work.</string>
     <string name="settings_nonroot_limits">Non-root limits</string>
     <string name="settings_nonroot_limits_body">Without root, Android only lets us decrypt apps that trust user certificates (e.g. Chrome). Blocking, logging and PCAP still work for every app.</string>
+    <string name="settings_cosmetic_filtering">Cosmetic filtering</string>
+    <string name="settings_hide_ad_elements">Hide ad elements</string>
+    <string name="settings_hide_ad_elements_sub">Inject CSS to hide ad slots and boxes that survive network blocking, on inspected apps.</string>
+    <string name="settings_run_scriptlets">Run scriptlets</string>
+    <string name="settings_run_scriptlets_sub">Advanced: injects JavaScript into pages to defuse anti-adblock and ad scripts. Downloads a scriptlet pack.</string>
+    <string name="settings_cosmetic_requires">Requires inspection</string>
+    <string name="settings_cosmetic_requires_body">Cosmetic filtering only works on apps you\'ve enabled HTTPS inspection for (with the Adwarden CA installed) — Chrome and Firefox. It never touches other apps.</string>
     <string name="settings_system_integration">System integration</string>
     <string name="settings_always_on">Always-on VPN</string>
     <string name="settings_always_on_sub">Open Android\'s VPN settings to keep Adwarden always connected, and optionally block traffic while it\'s off (lockdown).</string>

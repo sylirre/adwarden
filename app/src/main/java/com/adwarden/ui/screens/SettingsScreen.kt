@@ -18,11 +18,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.Icon
@@ -58,6 +60,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val blockEncryptedDns by viewModel.blockEncryptedDns.collectAsStateWithLifecycle()
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
+    val cosmeticElementHiding by viewModel.cosmeticElementHiding.collectAsStateWithLifecycle()
+    val cosmeticScriptlets by viewModel.cosmeticScriptlets.collectAsStateWithLifecycle()
     val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
     var showCaWizard by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -131,6 +135,33 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     Icons.Rounded.Info,
                     stringResource(R.string.settings_nonroot_limits),
                     stringResource(R.string.settings_nonroot_limits_body),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        SectionTitle(stringResource(R.string.settings_cosmetic_filtering))
+        AdwCard(Modifier.fillMaxWidth()) {
+            Column {
+                ToggleRow(
+                    title = stringResource(R.string.settings_hide_ad_elements),
+                    subtitle = stringResource(R.string.settings_hide_ad_elements_sub),
+                    checked = cosmeticElementHiding,
+                    onCheckedChange = viewModel::setCosmeticElementHiding,
+                    leading = Icons.Rounded.VisibilityOff,
+                )
+                ToggleRow(
+                    title = stringResource(R.string.settings_run_scriptlets),
+                    subtitle = stringResource(R.string.settings_run_scriptlets_sub),
+                    checked = cosmeticScriptlets,
+                    onCheckedChange = viewModel::setCosmeticScriptlets,
+                    leading = Icons.Rounded.Code,
+                    enabled = cosmeticElementHiding,
+                )
+                InfoRow(
+                    Icons.Rounded.Info,
+                    stringResource(R.string.settings_cosmetic_requires),
+                    stringResource(R.string.settings_cosmetic_requires_body),
                 )
             }
         }

@@ -113,14 +113,24 @@ fun ToggleRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     leading: ImageVector? = null,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    // Material disabled-content alpha; dims a gated row (e.g. scriptlets until
+    // element hiding is on) and drops it from the toggleable semantics.
+    val contentAlpha = if (enabled) 1f else 0.38f
     Row(
         modifier = modifier
             .fillMaxWidth()
             // The whole row is the switch: bigger target + a single, correctly
             // announced control (Role.Switch with on/off state) for TalkBack.
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .then(
+                if (enabled) {
+                    Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -128,20 +138,28 @@ fun ToggleRow(
             Icon(
                 leading,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
                 modifier = Modifier
                     .padding(end = 14.dp)
                     .size(22.dp),
             )
         }
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
+            )
             if (subtitle != null) {
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
+                )
             }
         }
         // Row owns the toggle semantics; the Switch is now purely visual.
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 

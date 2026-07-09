@@ -28,6 +28,10 @@ data class AppSettings(
      *  Quick Settings tile and boot/always-on reasoning know what was asked (P3-5).
      *  This is intent, not the live running state (that's NativeSessionHolder). */
     val desiredProtection: Boolean = false,
+    /** Element hiding (P4): inject cosmetic CSS into HTML on inspected apps. */
+    val cosmeticElementHiding: Boolean = false,
+    /** Scriptlet injection (P4): gated behind element hiding + a downloaded pack. */
+    val cosmeticScriptlets: Boolean = false,
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -53,6 +57,8 @@ class SettingsRepository @Inject constructor(
             blockEncryptedDns = prefs[KEY_BLOCK_ENCRYPTED_DNS] ?: false,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
             desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
+            cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
+            cosmeticScriptlets = prefs[KEY_COSMETIC_SCRIPTLETS] ?: false,
         )
     }
 
@@ -71,6 +77,12 @@ class SettingsRepository @Inject constructor(
     suspend fun setDesiredProtection(value: Boolean) =
         store.edit { it[KEY_DESIRED_PROTECTION] = value }
 
+    suspend fun setCosmeticElementHiding(value: Boolean) =
+        store.edit { it[KEY_COSMETIC_ELEMENT_HIDING] = value }
+
+    suspend fun setCosmeticScriptlets(value: Boolean) =
+        store.edit { it[KEY_COSMETIC_SCRIPTLETS] = value }
+
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -78,5 +90,7 @@ class SettingsRepository @Inject constructor(
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
         val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
+        val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")
+        val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")
     }
 }
