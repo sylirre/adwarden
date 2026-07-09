@@ -10,12 +10,12 @@ plugins {
 }
 
 android {
-    namespace = "com.adwarden"
+    namespace = "io.github.sylirre.adwarden"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "com.adwarden"
+        applicationId = "io.github.sylirre.adwarden"
         minSdk = 30
         targetSdk = 36
         versionCode = 2

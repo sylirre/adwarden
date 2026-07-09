@@ -36,7 +36,7 @@ GPLv3-compatible licenses (see [License](#license)).
 ### Project structure
 
 ```
-app/src/main/java/com/adwarden/
+app/src/main/java/io/github/sylirre/adwarden/
   core/            Capture models, NativeCore/NativeBridge (JNI), event codec
   data/            CaptureRepository, Filter/AppRule repos, Room db, DataStore
   firewall/        AppInventory, NetworkStateMonitor

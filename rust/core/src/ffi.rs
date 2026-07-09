@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Sylirre
 
-//! JNI entry points (`Java_com_adwarden_core_NativeCore_*`).
+//! JNI entry points (`Java_io_github_sylirre_adwarden_core_NativeCore_*`).
 //!
 //! Every function wraps its body in `catch_unwind`: a Rust panic unwinding
 //! across the FFI boundary is undefined behavior, so panics are converted to a
@@ -42,7 +42,7 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 pub const ABI_VERSION: i32 = 6;
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeAbiVersion(
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
@@ -53,7 +53,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
 /// `[certPem, keyPem]`, or null on failure. Called once on first run (P2); Kotlin
 /// persists the key app-privately and exports the cert for the install wizard.
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeGenerateCa<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeGenerateCa<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jobjectArray {
@@ -76,7 +76,7 @@ fn generate_ca(env: &mut JNIEnv) -> Option<jobjectArray> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStart<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeStart<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     tun_fd: jint,
@@ -114,7 +114,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStart<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStop(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeStop(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -129,7 +129,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStop(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFilter<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpdateFilter<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -148,7 +148,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFilter<'loc
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateConfig<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpdateConfig<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -168,7 +168,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateConfig<'loc
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFirewall<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpdateFirewall<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -184,7 +184,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFirewall<'l
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateNetwork(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpdateNetwork(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -203,7 +203,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateNetwork(
 /// no app is engaged, the datapath coalesces allowed-flow telemetry and relaxes
 /// its wakeup cadence; enforcement is unaffected. Cheap, idempotent, live.
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeSetLogOpen(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeSetLogOpen(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -240,7 +240,7 @@ fn parse_firewall(blob: &[u8]) -> HashMap<i32, AppPolicy> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStartPcap(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeStartPcap(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -265,7 +265,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStartPcap(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStopPcap(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeStopPcap(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -281,7 +281,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeStopPcap(
 /// an owned fd (P2-3). Returns true if the session accepted the request; the
 /// write happens asynchronously on the datapath thread, which closes the fd.
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeExportHar(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeExportHar(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -305,7 +305,7 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeExportHar(
 /// the serialized cache to `out_path`. Runs off the datapath (called from the
 /// WorkManager sync worker). Returns true on success.
 #[no_mangle]
-pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeCompileEngine<'local>(
+pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeCompileEngine<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     list_paths: JObjectArray<'local>,
