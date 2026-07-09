@@ -25,6 +25,24 @@ data class FilterSubscription(
     val ruleCount: Int = 0,
 )
 
+/**
+ * The scriptlet resource pack (P4-3): a runtime-downloaded JSON array of
+ * `adblock` resources supplying the JS implementations that `##+js(...)` rules
+ * reference. Kept out of the APK for licensing (the uBO/AdGuard scriptlet library
+ * is GPL) — only this URL ships; the pack is fetched at runtime, exactly like a
+ * filter list. A single row (mirroring [FilterSubscription]'s sync metadata).
+ */
+@Entity(tableName = "scriptlet_pack")
+data class ScriptletPack(
+    @PrimaryKey val id: String,
+    val name: String,
+    val url: String,
+    val enabled: Boolean,
+    val etag: String? = null,
+    val lastModified: String? = null,
+    val lastSyncMs: Long = 0L,
+)
+
 /** A user-authored ABP-syntax rule (e.g. `||ads.example.com^`, `@@||cdn^`). */
 @Entity(tableName = "custom_rule")
 data class CustomRule(

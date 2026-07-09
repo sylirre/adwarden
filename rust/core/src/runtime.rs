@@ -37,8 +37,10 @@ const HEARTBEAT_INTERVAL_IDLE: Duration = Duration::from_secs(15);
 
 /// A runtime control message applied on the datapath thread between polls.
 pub enum Command {
-    /// Load a serialized filter-engine cache from disk.
-    LoadEngine(String),
+    /// Load a serialized filter-engine cache from disk, optionally applying a
+    /// scriptlet resource pack (P4-3) so `injected_script` is populated. Resources
+    /// aren't serialized into the cache, so the pack is re-applied on every load.
+    LoadEngine { engine: String, resources: Option<String> },
     /// Toggle blocking of encrypted DNS (DoT/DoH endpoints).
     BlockEncryptedDns(bool),
     /// Replace the per-app firewall rules (uid -> policy).
@@ -232,7 +234,9 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
     };
     for command in drained {
         match command {
-            Command::LoadEngine(path) => forwarder.load_engine(&path),
+            Command::LoadEngine { engine, resources } => {
+                forwarder.load_engine(&engine, resources.as_deref())
+            }
             Command::BlockEncryptedDns(block) => forwarder.set_block_encrypted_dns(block),
             Command::UpdateFirewall(rules) => forwarder.set_firewall(rules),
             Command::SetTransport(transport) => forwarder.set_transport(transport),

@@ -264,10 +264,13 @@ impl Forwarder {
         }
     }
 
-    /// Load (or replace) the filter engine from its serialized cache file.
-    pub fn load_engine(&mut self, path: &str) {
+    /// Load (or replace) the filter engine from its serialized cache file,
+    /// optionally applying a scriptlet resource pack (P4-3). The pack lives outside
+    /// the cache (resources aren't serialized), so it is re-read on each load.
+    pub fn load_engine(&mut self, path: &str, resources_path: Option<&str>) {
         if let Ok(bytes) = std::fs::read(path) {
-            self.engine = FilterEngine::from_serialized(&bytes);
+            let resources = resources_path.and_then(|p| std::fs::read_to_string(p).ok());
+            self.engine = FilterEngine::from_serialized_with_resources(&bytes, resources.as_deref());
         }
     }
 

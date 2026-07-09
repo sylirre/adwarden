@@ -50,6 +50,24 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+// v4 adds the scriptlet resource pack table (P4-3). CREATE TABLE must match Room's
+// generated schema exactly (see app/schemas/.../4.json) or the identity check throws.
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `scriptlet_pack` (" +
+                "`id` TEXT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`url` TEXT NOT NULL, " +
+                "`enabled` INTEGER NOT NULL, " +
+                "`etag` TEXT, " +
+                "`lastModified` TEXT, " +
+                "`lastSyncMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+        )
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object DataModule {
@@ -58,7 +76,7 @@ object DataModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AdwardenDatabase =
         Room.databaseBuilder(context, AdwardenDatabase::class.java, "adwarden.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
 
     @Provides

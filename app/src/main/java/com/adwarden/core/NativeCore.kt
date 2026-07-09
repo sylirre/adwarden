@@ -38,8 +38,12 @@ object NativeCore {
     /** Stop the session; the core closes the TUN fd it owns. */
     external fun nativeStop(handle: Long)
 
-    /** Point the core at a freshly compiled, serialized filter-engine cache file. */
-    external fun nativeUpdateFilter(handle: Long, engineCachePath: String)
+    /**
+     * Point the core at a freshly compiled, serialized filter-engine cache file,
+     * plus an optional scriptlet resource pack (P4-3; `""` = none) applied on load
+     * so `##+js(...)` scriptlets have their JS implementations.
+     */
+    external fun nativeUpdateFilter(handle: Long, engineCachePath: String, scriptletPackPath: String)
 
     /** Push updated runtime config (e.g. the block-encrypted-DNS toggle) as JSON. */
     external fun nativeUpdateConfig(handle: Long, configJson: String)

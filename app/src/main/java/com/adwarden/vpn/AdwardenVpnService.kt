@@ -303,7 +303,9 @@ class AdwardenVpnService : VpnService() {
     /** Re-push state a fresh native session doesn't carry from its start config. */
     private suspend fun reapplyNativeState(handle: Long) {
         if (filters.hasCompiledEngine()) {
-            NativeCore.nativeUpdateFilter(handle, filters.engineCacheFile.absolutePath)
+            NativeCore.nativeUpdateFilter(
+                handle, filters.engineCacheFile.absolutePath, filters.scriptletPackPath(),
+            )
         }
         NativeCore.nativeUpdateFirewall(handle, appRules.encodeBlob(appRules.rules.first()))
         val net = networkMonitor.state.first()
@@ -364,7 +366,9 @@ class AdwardenVpnService : VpnService() {
         // Load any existing engine cache immediately, reload on recompile, and
         // kick off a sync (download-if-missing) so blocking is available.
         if (filters.hasCompiledEngine()) {
-            NativeCore.nativeUpdateFilter(nativeHandle, filters.engineCacheFile.absolutePath)
+            NativeCore.nativeUpdateFilter(
+                nativeHandle, filters.engineCacheFile.absolutePath, filters.scriptletPackPath(),
+            )
         }
         filters.scheduleSync(expedited = !filters.hasCompiledEngine())
         scope.launch {
@@ -373,7 +377,9 @@ class AdwardenVpnService : VpnService() {
                 .collect {
                     val handle = nativeHandle
                     if (handle != 0L && filters.hasCompiledEngine()) {
-                        NativeCore.nativeUpdateFilter(handle, filters.engineCacheFile.absolutePath)
+                        NativeCore.nativeUpdateFilter(
+                            handle, filters.engineCacheFile.absolutePath, filters.scriptletPackPath(),
+                        )
                     }
                 }
         }

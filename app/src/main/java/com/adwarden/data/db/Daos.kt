@@ -59,6 +59,29 @@ interface FilterDao {
 
     @Delete
     suspend fun deleteCustomRule(rule: CustomRule)
+
+    // --- scriptlet resource pack (P4-3) ---
+
+    @Query("SELECT * FROM scriptlet_pack LIMIT 1")
+    fun scriptletPack(): Flow<ScriptletPack?>
+
+    @Query("SELECT * FROM scriptlet_pack LIMIT 1")
+    suspend fun scriptletPackOnce(): ScriptletPack?
+
+    @Query("SELECT COUNT(*) FROM scriptlet_pack")
+    suspend fun scriptletPackCount(): Int
+
+    @Upsert
+    suspend fun upsertScriptletPack(pack: ScriptletPack)
+
+    @Query("UPDATE scriptlet_pack SET enabled = :enabled WHERE id = :id")
+    suspend fun setScriptletPackEnabled(id: String, enabled: Boolean)
+
+    @Query(
+        "UPDATE scriptlet_pack SET etag = :etag, lastModified = :lastModified, " +
+            "lastSyncMs = :syncedAt WHERE id = :id",
+    )
+    suspend fun updateScriptletPackSyncMeta(id: String, etag: String?, lastModified: String?, syncedAt: Long)
 }
 
 @Dao

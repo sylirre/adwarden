@@ -14,6 +14,7 @@ import com.adwarden.data.db.CustomRule
 import com.adwarden.data.db.FilterDao
 import com.adwarden.data.db.FilterFormat
 import com.adwarden.data.db.FilterSubscription
+import com.adwarden.data.db.ScriptletPack
 import com.adwarden.work.FilterSyncWorker
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -39,6 +40,7 @@ class FilterRepository @Inject constructor(
 ) {
     val subscriptions: Flow<List<FilterSubscription>> = filterDao.subscriptions()
     val customRules: Flow<List<CustomRule>> = filterDao.customRules()
+    val scriptletPack: Flow<ScriptletPack?> = filterDao.scriptletPack()
 
     private val _engineVersion = MutableStateFlow(0)
     /** Increments each time the engine cache is recompiled. */
@@ -49,14 +51,42 @@ class FilterRepository @Inject constructor(
     /** Serialized engine cache. The name embeds a schema tag so a format change invalidates it. */
     val engineCacheFile: File by lazy { File(context.filesDir, "filter_engine_v$ENGINE_SCHEMA.bin") }
 
+    /** Runtime-downloaded scriptlet resource pack (P4-3), never bundled. */
+    val scriptletPackFile: File by lazy { File(context.filesDir, "scriptlet_resources.json") }
+
     fun listFile(id: String): File = File(listDir, "$id.txt")
 
     fun hasCompiledEngine(): Boolean = engineCacheFile.exists()
+
+    /**
+     * Path to the scriptlet pack for the datapath's engine load, or `""` when no
+     * pack has been downloaded (the native side treats empty as "no pack"). The
+     * pack is loaded whenever present; the actual scriptlet injection is gated by
+     * the separate "Run scriptlets" config switch (P4-4).
+     */
+    fun scriptletPackPath(): String =
+        if (scriptletPackFile.exists()) scriptletPackFile.absolutePath else ""
+
+    suspend fun scriptletPackOnce(): ScriptletPack? = filterDao.scriptletPackOnce()
+
+    /** Enable/disable fetching the scriptlet pack; enabling schedules a sync. */
+    suspend fun setScriptletPackEnabled(enabled: Boolean) {
+        filterDao.setScriptletPackEnabled(DEFAULT_SCRIPTLET_PACK.id, enabled)
+        if (enabled) scheduleSync(expedited = true)
+    }
+
+    suspend fun updateScriptletPackSyncMeta(etag: String?, lastModified: String?) =
+        filterDao.updateScriptletPackSyncMeta(
+            DEFAULT_SCRIPTLET_PACK.id, etag, lastModified, System.currentTimeMillis(),
+        )
 
     /** Seed the default subscription set on first launch (idempotent). */
     suspend fun ensureSeeded() {
         if (filterDao.subscriptionCount() == 0) {
             filterDao.upsertSubscriptions(DEFAULT_SUBSCRIPTIONS)
+        }
+        if (filterDao.scriptletPackCount() == 0) {
+            filterDao.upsertScriptletPack(DEFAULT_SCRIPTLET_PACK)
         }
         // Repoint already-seeded rows whose default URL we have since replaced.
         // User state on the row (enabled, sync meta) is otherwise preserved.
@@ -148,6 +178,17 @@ class FilterRepository @Inject constructor(
         // Bump when the serialized engine format or adblock crate version changes.
         // v2: cosmetic rules retained in the cache (P4) — invalidates network-only caches.
         private const val ENGINE_SCHEMA = 2
+
+        // Scriptlet resource pack (P4-3), disabled by default (scriptlets are an
+        // opt-in advanced feature). Brave's adblock-resources is the canonical
+        // pack for the `adblock` crate — a JSON array of resources, base64 content.
+        // GPL scriptlet code is fetched at runtime, never bundled in the APK.
+        val DEFAULT_SCRIPTLET_PACK = ScriptletPack(
+            id = "brave_scriptlets",
+            name = "Brave adblock-resources (scriptlets)",
+            url = "https://raw.githubusercontent.com/brave/adblock-resources/master/dist/resources.json",
+            enabled = false,
+        )
         private const val PERIODIC_WORK = "adwarden_filter_sync_periodic"
         private const val ONESHOT_WORK = "adwarden_filter_sync_now"
 

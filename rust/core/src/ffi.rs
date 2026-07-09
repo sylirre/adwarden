@@ -35,7 +35,8 @@ unsafe fn session<'a>(handle: jlong) -> Option<&'a Session> {
 ///     the enforcement-safe battery fast-path (P3-4).
 /// v5: added the cosmetic-filtering config keys (`cosmetic_element_hiding`,
 ///     `cosmetic_scriptlets`) carried by `nativeUpdateConfig` (P4-2).
-pub const ABI_VERSION: i32 = 5;
+/// v6: `nativeUpdateFilter` gained a scriptlet-resource-pack path argument (P4-3).
+pub const ABI_VERSION: i32 = 6;
 
 #[no_mangle]
 pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeAbiVersion(
@@ -130,11 +131,15 @@ pub extern "system" fn Java_com_adwarden_core_NativeCore_nativeUpdateFilter<'loc
     _class: JClass<'local>,
     handle: jlong,
     engine_path: JString<'local>,
+    scriptlet_pack_path: JString<'local>,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let path: String = env.get_string(&engine_path).map(|s| s.into()).unwrap_or_default();
+        // Empty string = no pack (Kotlin passes "" rather than a null jstring).
+        let pack: String = env.get_string(&scriptlet_pack_path).map(|s| s.into()).unwrap_or_default();
+        let resources = if pack.is_empty() { None } else { Some(pack) };
         if let Some(session) = unsafe { session(handle) } {
-            session.send(Command::LoadEngine(path));
+            session.send(Command::LoadEngine { engine: path, resources });
         }
     }));
 }

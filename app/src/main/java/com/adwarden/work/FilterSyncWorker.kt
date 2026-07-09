@@ -7,6 +7,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.adwarden.data.FilterRepository
 import com.adwarden.data.db.FilterSubscription
+import com.adwarden.data.db.ScriptletPack
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -34,9 +35,38 @@ class FilterSyncWorker @AssistedInject constructor(
                 Log.w(TAG, "sync failed for ${subscription.id}", error)
             }
         }
+        // Fetch the scriptlet resource pack when enabled (P4-3), never bundled.
+        repository.scriptletPackOnce()?.takeIf { it.enabled }?.let { pack ->
+            runCatching { syncPack(pack) }.onFailure { error ->
+                Log.w(TAG, "scriptlet pack sync failed", error)
+            }
+        }
         // Recompile even when every list 304s, so enable/disable and custom-rule
-        // edits take effect.
+        // edits take effect. The bump also re-loads the (possibly refreshed) pack.
         if (repository.recompileEngine()) Result.success() else Result.retry()
+    }
+
+    private suspend fun syncPack(pack: ScriptletPack) {
+        val file = repository.scriptletPackFile
+        val builder = Request.Builder().url(pack.url)
+        if (file.exists()) {
+            pack.etag?.let { builder.header("If-None-Match", it) }
+            pack.lastModified?.let { builder.header("If-Modified-Since", it) }
+        }
+        client.newCall(builder.build()).execute().use { response ->
+            when {
+                response.code == 304 -> return
+                response.isSuccessful -> {
+                    val body = response.body?.string() ?: return
+                    file.writeText(body)
+                    repository.updateScriptletPackSyncMeta(
+                        etag = response.header("ETag"),
+                        lastModified = response.header("Last-Modified"),
+                    )
+                }
+                else -> Log.w(TAG, "scriptlet pack sync: HTTP ${response.code} from ${pack.url}")
+            }
+        }
     }
 
     private suspend fun syncOne(subscription: FilterSubscription) {
