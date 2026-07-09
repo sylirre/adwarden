@@ -508,6 +508,17 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return; // firewall drop (covers this app's DNS too)
                 }
+                // QUIC suppression (P4-5): when cosmetics are on, drop UDP :443 for
+                // inspected apps so they fall back to TCP+TLS — the no-ALPN H1
+                // downgrade the rewriter needs to see HTML. Without this, HTTP/3
+                // bypasses the TCP MITM entirely and cosmetics silently don't apply.
+                if self.cosmetic_element_hiding
+                    && decoded.dst_port == HTTPS_PORT
+                    && self.app_inspects(verdict.uid)
+                {
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return;
+                }
                 let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if let Some(dgram) = udp::parse(packet) {
                     if is_dns && self.handle_dns(&decoded, &dgram, batcher) {
