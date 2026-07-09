@@ -146,7 +146,8 @@ class FilterRepository @Inject constructor(
 
     companion object {
         // Bump when the serialized engine format or adblock crate version changes.
-        private const val ENGINE_SCHEMA = 1
+        // v2: cosmetic rules retained in the cache (P4) — invalidates network-only caches.
+        private const val ENGINE_SCHEMA = 2
         private const val PERIODIC_WORK = "adwarden_filter_sync_periodic"
         private const val ONESHOT_WORK = "adwarden_filter_sync_now"
 
