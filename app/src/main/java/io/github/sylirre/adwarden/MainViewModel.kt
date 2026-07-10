@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.StatsRepository
+import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
 import io.github.sylirre.adwarden.data.settings.ThemeMode
 import io.github.sylirre.adwarden.firewall.AppInventory
@@ -55,9 +56,9 @@ class MainViewModel @Inject constructor(
         .map { it.themeMode }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.themeMode)
 
-    val blockEncryptedDns: StateFlow<Boolean> = settings.settings
-        .map { it.blockEncryptedDns }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.blockEncryptedDns)
+    val encryptedDnsMode: StateFlow<EncryptedDnsMode> = settings.settings
+        .map { it.encryptedDnsMode }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.encryptedDnsMode)
 
     val interceptTls: StateFlow<Boolean> = settings.settings
         .map { it.interceptTls }
@@ -132,8 +133,8 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { settings.setThemeMode(value) }
     }
 
-    fun setBlockEncryptedDns(value: Boolean) {
-        viewModelScope.launch { settings.setBlockEncryptedDns(value) }
+    fun setEncryptedDnsMode(value: EncryptedDnsMode) {
+        viewModelScope.launch { settings.setEncryptedDnsMode(value) }
     }
 
     fun setInterceptTls(value: Boolean) {

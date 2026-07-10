@@ -55,7 +55,7 @@ class NativeCoreSmokeTest {
             connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager,
             protector = { true },
         )
-        val config = """{"mtu":1500,"block_encrypted_dns":false,"dns_servers":["1.1.1.1"]}"""
+        val config = """{"mtu":1500,"encrypted_dns_mode":"off","dns_servers":["1.1.1.1"]}"""
         val handle = NativeCore.nativeStart(coreFd, config, bridge)
         assertNotEquals("nativeStart must return a live session handle", 0L, handle)
 

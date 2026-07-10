@@ -21,7 +21,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use std::collections::HashMap;
 
 use crate::bridge::Bridge;
-use crate::config::Config;
+use crate::config::{Config, EncryptedDnsMode};
 use crate::event::Batcher;
 use crate::forward::{AppPolicy, Forwarder};
 
@@ -44,8 +44,8 @@ pub enum Command {
     /// scriptlet resource pack (P4-3) so `injected_script` is populated. Resources
     /// aren't serialized into the cache, so the pack is re-applied on every load.
     LoadEngine { engine: String, resources: Option<String> },
-    /// Toggle blocking of encrypted DNS (DoT/DoH endpoints).
-    BlockEncryptedDns(bool),
+    /// Set how encrypted DNS (DoT/DoH) is handled: off, block, or filter.
+    SetEncryptedDnsMode(EncryptedDnsMode),
     /// Replace the per-app firewall rules (uid -> policy).
     UpdateFirewall(HashMap<i32, AppPolicy>),
     /// Set the current network transport (0 other / 1 wifi / 2 cellular).
@@ -240,7 +240,7 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::LoadEngine { engine, resources } => {
                 forwarder.load_engine(&engine, resources.as_deref())
             }
-            Command::BlockEncryptedDns(block) => forwarder.set_block_encrypted_dns(block),
+            Command::SetEncryptedDnsMode(mode) => forwarder.set_encrypted_dns_mode(mode),
             Command::UpdateFirewall(rules) => forwarder.set_firewall(rules),
             Command::SetTransport(transport) => forwarder.set_transport(transport),
             Command::StartPcap { fd, ring_bytes } => forwarder.start_pcap(fd, ring_bytes),

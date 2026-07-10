@@ -108,9 +108,50 @@ impl Event {
         Event::from_decoded(decoded, KIND_FLOW, VERDICT_BLOCK, None)
     }
 
+    /// A blocked TCP flow known only by its upstream endpoint — e.g. a DoH flow
+    /// dropped (fail closed) because it couldn't be intercepted. `src` is zeroed
+    /// (the app's local port isn't on hand here).
+    pub fn blocked_flow(server: SocketAddr) -> Event {
+        Event {
+            kind: KIND_FLOW,
+            ip_version: if server.is_ipv4() { 4 } else { 6 },
+            proto: PROTO_TCP,
+            verdict: VERDICT_BLOCK,
+            uid: -1,
+            src_port: 0,
+            dst_port: server.port(),
+            length: 0,
+            timestamp_ms: now_ms(),
+            src: [0u8; 16],
+            dst: ip_bytes(server.ip()),
+            domain: None,
+        }
+    }
+
     /// A DNS query blocked by the filter engine, carrying the sinkholed domain.
     pub fn blocked_domain(decoded: &Decoded, domain: String) -> Event {
         Event::from_decoded(decoded, KIND_DNS_BLOCK, VERDICT_BLOCK, Some(domain))
+    }
+
+    /// A DNS query blocked inside an intercepted encrypted-DNS (DoT/DoH) flow.
+    /// Like [`blocked_domain`](Self::blocked_domain), but the flow is a TCP splice
+    /// so the endpoint comes from the upstream `server` rather than a decoded UDP
+    /// packet; the app's local port isn't known here, so `src` is zeroed.
+    pub fn enc_dns_blocked(uid: i32, server: SocketAddr, domain: String) -> Event {
+        Event {
+            kind: KIND_DNS_BLOCK,
+            ip_version: if server.is_ipv4() { 4 } else { 6 },
+            proto: PROTO_TCP,
+            verdict: VERDICT_BLOCK,
+            uid,
+            src_port: 0,
+            dst_port: server.port(),
+            length: 0,
+            timestamp_ms: now_ms(),
+            src: [0u8; 16],
+            dst: ip_bytes(server.ip()),
+            domain: Some(domain),
+        }
     }
 
     /// An HTTPS flow we couldn't decrypt because the app pinned/refused our leaf.

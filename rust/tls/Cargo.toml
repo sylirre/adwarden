@@ -6,6 +6,12 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# Minimal DNS wire parse/synthesize for encrypted-DNS (DoT/DoH) filtering.
+adwarden-dns = { path = "../dns" }
+# HPACK codec (RFC 7541) for the app-facing HTTP/2 side of DoH filtering. Pure
+# Rust, synchronous — fits the datapath's byte-pump model (the async `h2` crate
+# does not). Cross-compiles cleanly to the Android ABIs.
+fluke-hpack = "0.3"
 rustls.workspace = true
 rcgen.workspace = true
 webpki-roots.workspace = true

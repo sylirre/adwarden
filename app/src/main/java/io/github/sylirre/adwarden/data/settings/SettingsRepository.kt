@@ -20,12 +20,22 @@ import javax.inject.Singleton
 /** How the app resolves light/dark, independent of the Material You palette. */
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/**
+ * How the datapath treats encrypted DNS (DoT/DoH).
+ *  - OFF: leave it alone.
+ *  - BLOCK: drop it so clients fall back to plaintext we can filter.
+ *  - FILTER: TLS-intercept it and run the inner queries through the blocklist,
+ *    degrading to a drop when a flow can't be intercepted (requires the CA).
+ * Serialized to the native config JSON as the lowercase [name].
+ */
+enum class EncryptedDnsMode { OFF, BLOCK, FILTER }
+
 /** User preferences persisted to a Preferences DataStore. */
 data class AppSettings(
     val onboarded: Boolean = false,
     val dynamicColor: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val blockEncryptedDns: Boolean = false,
+    val encryptedDnsMode: EncryptedDnsMode = EncryptedDnsMode.OFF,
     val interceptTls: Boolean = false,
     /** The user's intended protection state, persisted across process death so the
      *  Quick Settings tile and boot/always-on reasoning know what was asked (P3-5).
@@ -57,7 +67,11 @@ class SettingsRepository @Inject constructor(
             dynamicColor = prefs[KEY_DYNAMIC_COLOR] ?: false,
             themeMode = prefs[KEY_THEME_MODE]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
                 ?: ThemeMode.SYSTEM,
-            blockEncryptedDns = prefs[KEY_BLOCK_ENCRYPTED_DNS] ?: false,
+            // New tri-state key wins; fall back to the legacy boolean (true ⇒ BLOCK)
+            // so an upgrading user who was blocking keeps blocking.
+            encryptedDnsMode = prefs[KEY_ENCRYPTED_DNS_MODE]
+                ?.let { runCatching { EncryptedDnsMode.valueOf(it) }.getOrNull() }
+                ?: if (prefs[KEY_BLOCK_ENCRYPTED_DNS] == true) EncryptedDnsMode.BLOCK else EncryptedDnsMode.OFF,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
             desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
             cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
@@ -71,8 +85,8 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setThemeMode(value: ThemeMode) = store.edit { it[KEY_THEME_MODE] = value.name }
 
-    suspend fun setBlockEncryptedDns(value: Boolean) =
-        store.edit { it[KEY_BLOCK_ENCRYPTED_DNS] = value }
+    suspend fun setEncryptedDnsMode(value: EncryptedDnsMode) =
+        store.edit { it[KEY_ENCRYPTED_DNS_MODE] = value.name }
 
     suspend fun setInterceptTls(value: Boolean) =
         store.edit { it[KEY_INTERCEPT_TLS] = value }
@@ -90,7 +104,9 @@ class SettingsRepository @Inject constructor(
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
+        // Legacy boolean, read only for migration into KEY_ENCRYPTED_DNS_MODE.
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
+        val KEY_ENCRYPTED_DNS_MODE = stringPreferencesKey("encrypted_dns_mode")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
         val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
         val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")

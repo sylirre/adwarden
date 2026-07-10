@@ -11,9 +11,11 @@ pub const TYPE_A: u16 = 1;
 pub const TYPE_AAAA: u16 = 28;
 pub const CLASS_IN: u16 = 1;
 
-/// Well-known DoH/DoT endpoints. The "Block encrypted DNS" toggle denies these
-/// so clients fall back to plaintext DNS we can actually filter. Not exhaustive
-/// — plaintext bypass via Private DNS is documented as a known limitation.
+/// Well-known DoH/DoT endpoint hostnames. Under "Filter" mode a 443 flow whose
+/// TLS SNI matches one of these is TLS-intercepted and its inner DNS filtered;
+/// under "Block" mode the fallback drop forces plaintext we can filter. Matching
+/// is by SNI (see [`is_doh_host`]), so CDN-fronted resolvers (e.g.
+/// `cloudflare-dns.com` on shared 104.x IPs) are caught without an IP list.
 pub const DOH_HOSTS: &[&str] = &[
     "dns.google",
     "dns.google.com",
@@ -25,7 +27,58 @@ pub const DOH_HOSTS: &[&str] = &[
     "dns.adguard.com",
     "dns.adguard-dns.com",
     "chrome.cloudflare-dns.com",
+    "doh.cleanbrowsing.org",
+    "dns.nextdns.io",
+    "doh.mullvad.net",
+    "dns10.quad9.net",
+    "dns11.quad9.net",
+    "dns.controld.com",
+    "freedns.controld.com",
 ];
+
+/// Whether `sni` is a known DoH/DoT endpoint (case-insensitive, exact host or a
+/// subdomain of one — e.g. `abc.dns.nextdns.io`).
+pub fn is_doh_host(sni: &str) -> bool {
+    let sni = sni.trim_end_matches('.').to_ascii_lowercase();
+    DOH_HOSTS.iter().any(|&h| sni == h || sni.ends_with(&format!(".{h}")))
+}
+
+/// Stable anycast IPs of major public resolvers. QUIC hides the SNI, so DoH3
+/// (UDP/443) and DoQ can't be classified by name; suppressing UDP to these
+/// forces the common resolvers back to interceptable TCP (P4). Not exhaustive —
+/// CDN-fronted DoH (e.g. `cloudflare-dns.com` on 104.x) is only caught over TCP.
+pub const KNOWN_DOH_IPS: &[std::net::IpAddr] = &[
+    ip4(1, 1, 1, 1),
+    ip4(1, 0, 0, 1),
+    ip4(8, 8, 8, 8),
+    ip4(8, 8, 4, 4),
+    ip4(9, 9, 9, 9),
+    ip4(149, 112, 112, 112),
+    ip4(94, 140, 14, 14),
+    ip4(94, 140, 15, 15),
+    ip4(208, 67, 222, 222),
+    ip4(208, 67, 220, 220),
+    ip6(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111),
+    ip6(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1001),
+    ip6(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888),
+    ip6(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8844),
+    ip6(0x2620, 0xfe, 0, 0, 0, 0, 0, 0xfe),
+    ip6(0x2620, 0xfe, 0, 0, 0, 0, 0, 0x9),
+];
+
+const fn ip4(a: u8, b: u8, c: u8, d: u8) -> std::net::IpAddr {
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d))
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn ip6(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> std::net::IpAddr {
+    std::net::IpAddr::V6(std::net::Ipv6Addr::new(a, b, c, d, e, f, g, h))
+}
+
+/// Whether `ip` is a known public-resolver address (for DoH3/DoQ suppression).
+pub fn is_known_doh_ip(ip: std::net::IpAddr) -> bool {
+    KNOWN_DOH_IPS.contains(&ip)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
@@ -218,6 +271,16 @@ mod tests {
         // Answer rdata is the last 4 bytes: 0.0.0.0
         let n = resp.len();
         assert_eq!(&resp[n - 4..], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn detects_doh_hosts() {
+        assert!(is_doh_host("cloudflare-dns.com"));
+        assert!(is_doh_host("Cloudflare-DNS.com")); // case-insensitive
+        assert!(is_doh_host("dns.google."));        // trailing root label
+        assert!(is_doh_host("abc.dns.nextdns.io")); // subdomain of a known host
+        assert!(!is_doh_host("example.com"));
+        assert!(!is_doh_host("notcloudflare-dns.com")); // not a real subdomain
     }
 
     #[test]

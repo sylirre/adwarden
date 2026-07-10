@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.sylirre.adwarden.BuildConfig
 import io.github.sylirre.adwarden.MainViewModel
 import io.github.sylirre.adwarden.R
+import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.ThemeMode
 import io.github.sylirre.adwarden.ui.components.AdwCard
 import io.github.sylirre.adwarden.ui.components.SectionTitle
@@ -61,7 +62,7 @@ import io.github.sylirre.adwarden.ui.theme.AdwShapes
 fun SettingsScreen(viewModel: MainViewModel) {
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
-    val blockEncryptedDns by viewModel.blockEncryptedDns.collectAsStateWithLifecycle()
+    val encryptedDnsMode by viewModel.encryptedDnsMode.collectAsStateWithLifecycle()
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
     val cosmeticElementHiding by viewModel.cosmeticElementHiding.collectAsStateWithLifecycle()
     val cosmeticScriptlets by viewModel.cosmeticScriptlets.collectAsStateWithLifecycle()
@@ -99,13 +100,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         SectionTitle(stringResource(R.string.settings_dns_filtering))
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
-                ToggleRow(
-                    title = stringResource(R.string.settings_block_encrypted_dns),
-                    subtitle = stringResource(R.string.settings_block_encrypted_dns_sub),
-                    checked = blockEncryptedDns,
-                    onCheckedChange = viewModel::setBlockEncryptedDns,
-                    leading = Icons.Rounded.Dns,
-                )
+                EncryptedDnsPicker(selected = encryptedDnsMode, onSelect = viewModel::setEncryptedDnsMode)
                 InfoRow(
                     Icons.Rounded.Info,
                     stringResource(R.string.settings_limitation),
@@ -264,6 +259,65 @@ private fun ThemeModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) 
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EncryptedDnsPicker(selected: EncryptedDnsMode, onSelect: (EncryptedDnsMode) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(
+            stringResource(R.string.settings_block_encrypted_dns),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            EncryptedDnsMode.entries.forEach { mode ->
+                val label = when (mode) {
+                    EncryptedDnsMode.OFF -> stringResource(R.string.settings_encrypted_dns_off)
+                    EncryptedDnsMode.BLOCK -> stringResource(R.string.settings_encrypted_dns_block)
+                    EncryptedDnsMode.FILTER -> stringResource(R.string.settings_encrypted_dns_filter)
+                }
+                val chosen = mode == selected
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(AdwShapes.Field)
+                        .background(
+                            if (chosen) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        )
+                        .border(
+                            1.dp,
+                            if (chosen) Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
+                            AdwShapes.Field,
+                        )
+                        .selectable(selected = chosen, role = Role.RadioButton) { onSelect(mode) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (chosen) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            when (selected) {
+                EncryptedDnsMode.OFF -> stringResource(R.string.settings_encrypted_dns_off_sub)
+                EncryptedDnsMode.BLOCK -> stringResource(R.string.settings_encrypted_dns_block_sub)
+                EncryptedDnsMode.FILTER -> stringResource(R.string.settings_encrypted_dns_filter_sub)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

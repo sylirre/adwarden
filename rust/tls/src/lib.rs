@@ -33,26 +33,41 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 
+mod dns;
+mod h2;
 mod har;
 mod mitm;
 mod rewriter;
+mod sni;
+pub use dns::DnsKind;
 pub use har::{write_har, HttpTransaction};
 pub use mitm::{MitmIo, TlsMitm};
 pub use rewriter::HttpRewriter;
+pub use sni::{peek_sni, SniPeek};
 
 /// Build the rustls client config used to re-originate intercepted flows to the
 /// real upstream, verifying the server against the bundled Mozilla root store
 /// (webpki-roots). Sites rooted outside that set won't be decryptable — an
 /// accepted limitation surfaced in the metadata-only fallback UX.
 pub fn upstream_client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
+    upstream_client_config_alpn(&[])
+}
+
+/// Like [`upstream_client_config`] but with an explicit ALPN offer. DoH
+/// re-origination offers only `http/1.1`, so the resolver speaks HTTP/1.1 back —
+/// far simpler to generate and parse than negotiating HTTP/2 upstream too.
+pub fn upstream_client_config_alpn(
+    alpn: &[&[u8]],
+) -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder_with_provider(
+    let mut config = rustls::ClientConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
     .with_safe_default_protocol_versions()?
     .with_root_certificates(roots)
     .with_no_client_auth();
+    config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(Arc::new(config))
 }
 
@@ -62,6 +77,10 @@ pub fn upstream_client_config() -> Result<Arc<rustls::ClientConfig>, rustls::Err
 pub struct MitmConfigs {
     server_config: Arc<rustls::ServerConfig>,
     client_config: Arc<rustls::ClientConfig>,
+    /// App-facing config advertising `h2`/`http/1.1` for DoH interception.
+    server_config_doh: Arc<rustls::ServerConfig>,
+    /// Upstream config offering only `http/1.1` for DoH re-origination.
+    client_config_doh: Arc<rustls::ClientConfig>,
     /// Collects the app-facing (server) session secrets in NSS key-log format so
     /// the datapath can embed them as a pcapng Decryption Secrets Block, letting
     /// Wireshark decrypt the captured MITM'd flows (P2-4). Shared with every
@@ -81,12 +100,39 @@ impl MitmConfigs {
             .server_config_with_key_log(key_log.clone())
             .map_err(|e| format!("server config: {e}"))?;
         let client_config = upstream_client_config().map_err(|e| format!("client config: {e}"))?;
-        Ok(MitmConfigs { server_config, client_config, key_log })
+        let server_config_doh = ca
+            .server_config_alpn(key_log.clone(), &[b"h2", b"http/1.1"])
+            .map_err(|e| format!("DoH server config: {e}"))?;
+        let client_config_doh = upstream_client_config_alpn(&[b"http/1.1"])
+            .map_err(|e| format!("DoH client config: {e}"))?;
+        Ok(MitmConfigs {
+            server_config,
+            client_config,
+            server_config_doh,
+            client_config_doh,
+            key_log,
+        })
     }
 
     /// Start a fresh interception splice for one flow.
     pub fn new_splice(&self) -> Result<TlsMitm, rustls::Error> {
         TlsMitm::new(self.server_config.clone(), self.client_config.clone())
+    }
+
+    /// Start a splice that filters encrypted DNS (DoT/DoH) instead of running the
+    /// HTTP tap/rewriter over the plaintext. DoH uses the h2-advertising server
+    /// config and the http/1.1-only upstream config; DoT needs neither.
+    pub fn new_splice_dns(&self, kind: DnsKind) -> Result<TlsMitm, rustls::Error> {
+        match kind {
+            DnsKind::Dot => {
+                TlsMitm::new_dns(self.server_config.clone(), self.client_config.clone(), kind)
+            }
+            DnsKind::Doh => TlsMitm::new_dns(
+                self.server_config_doh.clone(),
+                self.client_config_doh.clone(),
+                kind,
+            ),
+        }
     }
 
     /// Drain the app-facing TLS session secrets logged since the last call, as
@@ -255,6 +301,17 @@ impl CertAuthority {
         self: &Arc<Self>,
         key_log: Arc<dyn rustls::KeyLog>,
     ) -> Result<Arc<rustls::ServerConfig>, rustls::Error> {
+        self.server_config_alpn(key_log, &[])
+    }
+
+    /// Server config with an explicit ALPN offer. The cosmetic path passes `&[]`
+    /// (no ALPN ⇒ the deliberate HTTP/1.1 downgrade); the DoH path advertises
+    /// `["h2", "http/1.1"]` so h2-only DoH clients proceed and can be filtered.
+    pub fn server_config_alpn(
+        self: &Arc<Self>,
+        key_log: Arc<dyn rustls::KeyLog>,
+        alpn: &[&[u8]],
+    ) -> Result<Arc<rustls::ServerConfig>, rustls::Error> {
         let resolver = Arc::new(MintingResolver { ca: self.clone() });
         let mut config = rustls::ServerConfig::builder_with_provider(
             rustls::crypto::ring::default_provider().into(),
@@ -263,6 +320,7 @@ impl CertAuthority {
         .with_no_client_auth()
         .with_cert_resolver(resolver);
         config.key_log = key_log;
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         Ok(Arc::new(config))
     }
 }

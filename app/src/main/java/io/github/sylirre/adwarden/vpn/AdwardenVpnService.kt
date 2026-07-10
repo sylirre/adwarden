@@ -33,6 +33,7 @@ import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.FilterRepository
 import io.github.sylirre.adwarden.data.StatsRepository
+import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
 import io.github.sylirre.adwarden.firewall.NetworkStateMonitor
 import dagger.hilt.android.AndroidEntryPoint
@@ -354,15 +355,15 @@ class AdwardenVpnService : VpnService() {
         // to the core on change, coalesced into a single update.
         scope.launch {
             settings.settings
-                .map { Triple(it.blockEncryptedDns, it.cosmeticElementHiding, it.cosmeticScriptlets) }
+                .map { Triple(it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets) }
                 .distinctUntilChanged()
-                .collect { (block, hiding, scriptlets) ->
+                .collect { (mode, hiding, scriptlets) ->
                     val handle = nativeHandle
                     if (handle != 0L) {
                         NativeCore.nativeUpdateConfig(
                             handle,
                             JSONObject()
-                                .put("block_encrypted_dns", block)
+                                .put("encrypted_dns_mode", mode.name.lowercase())
                                 .put("cosmetic_element_hiding", hiding)
                                 .put("cosmetic_scriptlets", scriptlets)
                                 .toString(),
@@ -505,7 +506,7 @@ class AdwardenVpnService : VpnService() {
         // start-time setting (the native factory is built at session start), so
         // toggling it takes effect on the next VPN start / re-establish.
         data class Cfg(
-            val block: Boolean,
+            val encryptedDnsMode: EncryptedDnsMode,
             val material: CaMaterial?,
             val requested: Boolean,
             val hiding: Boolean,
@@ -514,7 +515,7 @@ class AdwardenVpnService : VpnService() {
         val cfg = runBlocking {
             val s = settings.settings.first()
             Cfg(
-                s.blockEncryptedDns,
+                s.encryptedDnsMode,
                 if (s.interceptTls) ca.ensureCa() else null,
                 s.interceptTls,
                 s.cosmeticElementHiding,
@@ -526,7 +527,7 @@ class AdwardenVpnService : VpnService() {
         }
         return JSONObject().apply {
             put("mtu", MTU)
-            put("block_encrypted_dns", cfg.block)
+            put("encrypted_dns_mode", cfg.encryptedDnsMode.name.lowercase())
             put("dns_servers", JSONArray(UPSTREAM_DNS))
             put("cosmetic_element_hiding", cfg.hiding)
             put("cosmetic_scriptlets", cfg.scriptlets)

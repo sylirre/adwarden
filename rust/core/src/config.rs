@@ -10,6 +10,20 @@ fn default_mtu() -> usize {
     1500
 }
 
+/// How the datapath treats encrypted DNS (DoT/DoH). `Off` leaves it untouched;
+/// `Block` drops it so clients fall back to plaintext we can filter; `Filter`
+/// TLS-intercepts it and runs the inner queries through the blocklist engine,
+/// degrading to a drop whenever a flow can't be intercepted (no CA, pinning,
+/// Private DNS strict, ECH, QUIC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncryptedDnsMode {
+    #[default]
+    Off,
+    Block,
+    Filter,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default = "default_mtu")]
@@ -18,8 +32,9 @@ pub struct Config {
     /// forward allowed queries (P1-B).
     #[serde(default)]
     pub dns_servers: Vec<String>,
+    /// Encrypted-DNS handling (DoT/DoH). Absent/unknown ⇒ `Off`.
     #[serde(default)]
-    pub block_encrypted_dns: bool,
+    pub encrypted_dns_mode: EncryptedDnsMode,
     /// TLS interception (P2): terminate & re-originate HTTPS so the datapath
     /// sees cleartext. Requires the CA PEMs below; a start-time setting.
     #[serde(default)]
@@ -51,7 +66,7 @@ impl Default for Config {
         Config {
             mtu: default_mtu(),
             dns_servers: Vec::new(),
-            block_encrypted_dns: false,
+            encrypted_dns_mode: EncryptedDnsMode::Off,
             intercept_tls: false,
             ca_cert_pem: None,
             ca_key_pem: None,

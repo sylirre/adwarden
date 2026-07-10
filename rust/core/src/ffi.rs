@@ -158,7 +158,7 @@ pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpd
         let config_json: String = env.get_string(&config).map(|s| s.into()).unwrap_or_default();
         let parsed = Config::from_json(&config_json);
         if let Some(session) = unsafe { session(handle) } {
-            session.send(Command::BlockEncryptedDns(parsed.block_encrypted_dns));
+            session.send(Command::SetEncryptedDnsMode(parsed.encrypted_dns_mode));
             session.send(Command::SetCosmetic {
                 element_hiding: parsed.cosmetic_element_hiding,
                 scriptlets: parsed.cosmetic_scriptlets,

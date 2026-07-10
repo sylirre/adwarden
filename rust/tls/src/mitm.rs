@@ -27,8 +27,17 @@ use std::sync::Arc;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 
+use crate::dns::{DnsKind, DnsStream};
 use crate::har::{HttpTap, HttpTransaction};
 use crate::rewriter::HttpRewriter;
+
+/// How a splice's decrypted plaintext is handled.
+enum Plaintext {
+    /// Normal HTTPS: HAR tap + cosmetic rewriter over the byte stream.
+    Http { tap: HttpTap, rewriter: HttpRewriter },
+    /// Encrypted DNS (DoT/DoH): filter the DNS messages against the blocklist.
+    Dns(DnsStream),
+}
 
 /// One pump's worth of output: TLS bytes to write toward each peer, plus a
 /// flag telling the caller to tear the flow down.
@@ -65,12 +74,9 @@ pub struct TlsMitm {
     /// refused our minted leaf (cert pinning / user-CA distrust). Drives the
     /// datapath's metadata-only fallback (P2-4).
     cert_rejected: bool,
-    /// Observes the decrypted plaintext both ways and yields HAR transactions.
-    tap: HttpTap,
-    /// Actively rewrites the plaintext for cosmetic filtering (P4-2): forces
-    /// `identity` on requests and injects CSS/JS into `text/html` responses. A
-    /// no-op passthrough until [`set_cosmetic`](Self::set_cosmetic) turns it on.
-    rewriter: HttpRewriter,
+    /// How the decrypted plaintext is handled: the HTTP tap/rewriter (HAR +
+    /// cosmetics, P2/P4) or an encrypted-DNS filter (DoT/DoH).
+    plaintext: Plaintext,
 }
 
 impl TlsMitm {
@@ -81,6 +87,28 @@ impl TlsMitm {
         server_config: Arc<ServerConfig>,
         client_config: Arc<ClientConfig>,
     ) -> Result<Self, rustls::Error> {
+        Self::with_plaintext(
+            server_config,
+            client_config,
+            Plaintext::Http { tap: HttpTap::new(), rewriter: HttpRewriter::new() },
+        )
+    }
+
+    /// Create a splice that filters encrypted DNS (DoT/DoH) over the plaintext
+    /// instead of running the HTTP tap/rewriter.
+    pub fn new_dns(
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        kind: DnsKind,
+    ) -> Result<Self, rustls::Error> {
+        Self::with_plaintext(server_config, client_config, Plaintext::Dns(DnsStream::new(kind)))
+    }
+
+    fn with_plaintext(
+        server_config: Arc<ServerConfig>,
+        client_config: Arc<ClientConfig>,
+        plaintext: Plaintext,
+    ) -> Result<Self, rustls::Error> {
         Ok(TlsMitm {
             server: ServerConnection::new(server_config)?,
             client: None,
@@ -90,16 +118,30 @@ impl TlsMitm {
             upstream_closed: false,
             failed: false,
             cert_rejected: false,
-            tap: HttpTap::new(),
-            rewriter: HttpRewriter::new(),
+            plaintext,
         })
+    }
+
+    /// Whether this splice filters encrypted DNS (vs. running the HTTP path).
+    pub fn is_dns(&self) -> bool {
+        matches!(self.plaintext, Plaintext::Dns(_))
+    }
+
+    /// Drain the DNS names sinkholed since the last call (encrypted-DNS mode).
+    pub fn take_dns_blocked(&mut self) -> Vec<String> {
+        match &mut self.plaintext {
+            Plaintext::Dns(dns) => dns.take_blocked(),
+            Plaintext::Http { .. } => Vec::new(),
+        }
     }
 
     /// Provision the cosmetic-filtering payload for this flow (P4-2). The datapath
     /// computes it from the filter engine once [`host`](Self::host) is known and
     /// hands it in; empty strings mean "off" (pure identity passthrough).
     pub fn set_cosmetic(&mut self, css: String, js: String) {
-        self.rewriter.set_cosmetic(css, js);
+        if let Plaintext::Http { rewriter, .. } = &mut self.plaintext {
+            rewriter.set_cosmetic(css, js);
+        }
     }
 
     /// The intercepted SNI host, once the ClientHello has been parsed.
@@ -117,7 +159,10 @@ impl TlsMitm {
 
     /// Drain the HTTP transactions decrypted so far (for HAR export, P2-3).
     pub fn take_transactions(&mut self) -> Vec<HttpTransaction> {
-        self.tap.take_transactions()
+        match &mut self.plaintext {
+            Plaintext::Http { tap, .. } => tap.take_transactions(),
+            Plaintext::Dns(_) => Vec::new(),
+        }
     }
 
     /// Feed TLS bytes just received from the app (smoltcp side).
@@ -150,8 +195,19 @@ impl TlsMitm {
     }
 
     /// Advance both sessions, cross any ready plaintext, and collect the TLS
-    /// bytes to send toward each peer.
+    /// bytes to send toward each peer. For the HTTP path (HAR/cosmetics).
     pub fn pump(&mut self) -> MitmIo {
+        self.pump_impl(None)
+    }
+
+    /// Like [`pump`](Self::pump), but for the encrypted-DNS path: `is_blocked`
+    /// decides each query, sinkholed answers go straight back to the app, and
+    /// allowed queries are forwarded to the real resolver.
+    pub fn pump_dns(&mut self, is_blocked: &mut dyn FnMut(&str) -> bool) -> MitmIo {
+        self.pump_impl(Some(is_blocked))
+    }
+
+    fn pump_impl(&mut self, dns_filter: Option<&mut dyn FnMut(&str) -> bool>) -> MitmIo {
         let mut io = MitmIo::default();
         if self.failed {
             io.closed = true;
@@ -171,7 +227,9 @@ impl TlsMitm {
         if self.client.is_none() {
             if let Some(name) = self.server.server_name() {
                 self.host = Some(name.to_string());
-                self.tap.set_host(name);
+                if let Plaintext::Http { tap, .. } = &mut self.plaintext {
+                    tap.set_host(name);
+                }
                 let Ok(sni) = ServerName::try_from(name.to_string()) else {
                     return self.fail(FailSide::Other);
                 };
@@ -194,7 +252,7 @@ impl TlsMitm {
             }
         }
 
-        self.cross_plaintext();
+        self.cross_plaintext(dns_filter);
 
         // Propagate clean closes across the splice.
         if self.app_closed {
@@ -223,7 +281,7 @@ impl TlsMitm {
         io.closed = self.failed || (self.app_closed && self.upstream_closed);
         if io.closed {
             // Flush a response whose body was delimited by connection close.
-            self.tap.finish();
+            self.finish();
         }
         io
     }
@@ -231,40 +289,86 @@ impl TlsMitm {
     /// Finalize HTTP capture when the flow is torn down out-of-band (e.g. the app
     /// resets before a clean close). Idempotent; safe to call before draining.
     pub fn finish(&mut self) {
-        self.tap.finish();
+        if let Plaintext::Http { tap, .. } = &mut self.plaintext {
+            tap.finish();
+        }
     }
 
     /// Move decrypted bytes app->upstream and upstream->app. rustls buffers on
     /// the far `writer()` until that side's handshake permits sending.
-    fn cross_plaintext(&mut self) {
+    fn cross_plaintext(&mut self, dns_filter: Option<&mut dyn FnMut(&str) -> bool>) {
         let Some(client) = self.client.as_mut() else { return };
         let mut buf = [0u8; 16 * 1024];
-        // app -> upstream (the HTTP request stream). The tap always sees the raw
-        // bytes (HAR reflects true traffic); the rewriter's output is what we
-        // actually forward — identical to the input unless cosmetics are on.
-        loop {
-            match self.server.reader().read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    self.tap.feed_request(&buf[..n]);
-                    let out = self.rewriter.feed_request(&buf[..n]);
-                    let _ = client.writer().write_all(&out);
+        match &mut self.plaintext {
+            Plaintext::Http { tap, rewriter } => {
+                // app -> upstream (the HTTP request stream). The tap always sees
+                // the raw bytes (HAR reflects true traffic); the rewriter's output
+                // is what we forward — identical unless cosmetics are on.
+                loop {
+                    match self.server.reader().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            tap.feed_request(&buf[..n]);
+                            let out = rewriter.feed_request(&buf[..n]);
+                            let _ = client.writer().write_all(&out);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                // upstream -> app (the HTTP response stream).
+                loop {
+                    match client.reader().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            tap.feed_response(&buf[..n]);
+                            let out = rewriter.feed_response(&buf[..n]);
+                            let _ = self.server.writer().write_all(&out);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
             }
-        }
-        // upstream -> app (the HTTP response stream).
-        loop {
-            match client.reader().read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    self.tap.feed_response(&buf[..n]);
-                    let out = self.rewriter.feed_response(&buf[..n]);
-                    let _ = self.server.writer().write_all(&out);
+            Plaintext::Dns(dns) => {
+                // Without a block decision (shouldn't happen — the datapath always
+                // calls `pump_dns` for DNS flows) fall back to forwarding so the
+                // connection can't deadlock.
+                let mut allow_all = |_: &str| false;
+                let is_blocked: &mut dyn FnMut(&str) -> bool = match dns_filter {
+                    Some(f) => f,
+                    None => &mut allow_all,
+                };
+                // app -> resolver: sinkhole blocked queries straight back to the
+                // app, forward the rest to the real resolver.
+                loop {
+                    match self.server.reader().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let cross = dns.on_app_data(&buf[..n], is_blocked);
+                            if !cross.to_upstream.is_empty() {
+                                let _ = client.writer().write_all(&cross.to_upstream);
+                            }
+                            if !cross.to_app.is_empty() {
+                                let _ = self.server.writer().write_all(&cross.to_app);
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                // resolver -> app: relay responses verbatim.
+                loop {
+                    match client.reader().read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let out = dns.on_upstream_data(&buf[..n]);
+                            let _ = self.server.writer().write_all(&out);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
             }
         }
     }
@@ -487,5 +591,123 @@ mod tests {
         assert!(closed, "the splice should have torn down after the app's rejection");
         assert!(mitm.cert_rejected(), "leaf rejection should be flagged as a cert-pin");
         assert_eq!(mitm.host(), Some(HOST), "SNI learned before the rejection");
+    }
+
+    /// Length-prefixed (DoT framing) type-A query for `name`, id 0x1234.
+    fn framed_query(name: &str) -> Vec<u8> {
+        let mut msg = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in name.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0);
+        msg.extend_from_slice(&1u16.to_be_bytes()); // A
+        msg.extend_from_slice(&1u16.to_be_bytes()); // IN
+        let mut framed = (msg.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(&msg);
+        framed
+    }
+
+    /// One DoT round, driving the splice with `pump_dns`.
+    fn dns_step(
+        app: &mut ClientConnection,
+        upstream: &mut ServerConnection,
+        mitm: &mut TlsMitm,
+        is_blocked: &mut dyn FnMut(&str) -> bool,
+    ) -> MitmIo {
+        let mut a2m = Vec::new();
+        while app.wants_write() {
+            app.write_tls(&mut a2m).unwrap();
+        }
+        mitm.recv_from_app(&a2m);
+
+        let mut u2m = Vec::new();
+        while upstream.wants_write() {
+            upstream.write_tls(&mut u2m).unwrap();
+        }
+        mitm.recv_from_upstream(&u2m);
+
+        let io = mitm.pump_dns(is_blocked);
+
+        let mut cur = &io.to_app[..];
+        while !cur.is_empty() && app.read_tls(&mut cur).unwrap() > 0 {}
+        app.process_new_packets().unwrap();
+
+        let mut cur = &io.to_upstream[..];
+        while !cur.is_empty() && upstream.read_tls(&mut cur).unwrap() > 0 {}
+        upstream.process_new_packets().unwrap();
+        io
+    }
+
+    /// Drain whatever plaintext is currently readable from a rustls endpoint.
+    fn drain(reader: &mut dyn Read) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(_) => break, // WouldBlock: nothing more decrypted yet
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn dot_sinkholes_blocked_and_forwards_allowed() {
+        // Full DoT splice: our CA (app trusts it) + a separate upstream CA (the
+        // mitm's client trusts it), each minting a leaf for the resolver host.
+        let our_ca = Arc::new(CertAuthority::generate().unwrap());
+        let upstream_ca = Arc::new(CertAuthority::generate().unwrap());
+        let mut mitm = TlsMitm::new_dns(
+            our_ca.server_config().unwrap(),
+            client_trusting(&upstream_ca),
+            DnsKind::Dot,
+        )
+        .unwrap();
+        let host = "dns.resolver.example";
+        let mut app = ClientConnection::new(
+            client_trusting(&our_ca),
+            ServerName::try_from(host).unwrap(),
+        )
+        .unwrap();
+        let mut upstream = ServerConnection::new(upstream_ca.server_config().unwrap()).unwrap();
+        let mut is_blocked = |name: &str| name == "ads.example.com";
+
+        for _ in 0..30 {
+            dns_step(&mut app, &mut upstream, &mut mitm, &mut is_blocked);
+            if !app.is_handshaking() && !upstream.is_handshaking() {
+                break;
+            }
+        }
+        assert_eq!(mitm.host(), Some(host), "mitm learned the DoT SNI");
+
+        // Blocked query: sinkholed straight back to the app as NXDOMAIN; the
+        // resolver never sees it.
+        app.writer().write_all(&framed_query("ads.example.com")).unwrap();
+        for _ in 0..5 {
+            dns_step(&mut app, &mut upstream, &mut mitm, &mut is_blocked);
+        }
+        assert!(drain(&mut upstream.reader()).is_empty(), "resolver must not see a blocked query");
+        let reply = drain(&mut app.reader());
+        assert!(reply.len() > 2, "app receives a synthesized answer");
+        let len = ((reply[0] as usize) << 8) | reply[1] as usize;
+        let ans = &reply[2..2 + len];
+        assert_eq!(&ans[0..2], &[0x12, 0x34], "query id echoed");
+        assert_eq!(ans[3] & 0x0F, 3, "NXDOMAIN rcode");
+
+        // Allowed query: forwarded to the resolver; its response reaches the app.
+        app.writer().write_all(&framed_query("good.example.com")).unwrap();
+        for _ in 0..5 {
+            dns_step(&mut app, &mut upstream, &mut mitm, &mut is_blocked);
+        }
+        let forwarded = drain(&mut upstream.reader());
+        assert!(!forwarded.is_empty(), "allowed query reaches the resolver");
+
+        upstream.writer().write_all(b"\x00\x04test").unwrap(); // arbitrary framed reply
+        for _ in 0..5 {
+            dns_step(&mut app, &mut upstream, &mut mitm, &mut is_blocked);
+        }
+        assert_eq!(drain(&mut app.reader()), b"\x00\x04test", "resolver reply relayed to app");
     }
 }

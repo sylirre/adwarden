@@ -25,10 +25,10 @@ use adwarden_filter::FilterEngine;
 use adwarden_pcap::PcapWriter;
 use adwarden_netstack::packet::L4;
 use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable, NetStack};
-use adwarden_tls::{write_har, HttpTransaction, MitmConfigs, TlsMitm};
+use adwarden_tls::{peek_sni, write_har, DnsKind, HttpTransaction, MitmConfigs, SniPeek, TlsMitm};
 
 use crate::bridge::Bridge;
-use crate::config::Config;
+use crate::config::{Config, EncryptedDnsMode};
 use crate::event::{Batcher, Event};
 
 const DOT_PORT: u16 = 853;
@@ -76,6 +76,20 @@ enum Route {
     Udp(UdpKey),
 }
 
+/// Whether a flow's interception has been decided, or is waiting on the SNI.
+enum Classify {
+    /// Interception (or raw relay) was decided when the flow opened.
+    Settled,
+    /// A 443 flow under Filter mode: buffer the app's bytes until the ClientHello
+    /// reveals the SNI, then classify as DoH (filter), cosmetic (inspected app),
+    /// or raw. Encrypted-DNS detection is auto (all apps), so we must peek.
+    PendingSni(Vec<u8>),
+}
+
+/// Cap on ClientHello bytes buffered while waiting to peek the SNI; past this we
+/// give up peeking and treat the flow as non-DoH.
+const SNI_PEEK_CAP: usize = 16 * 1024;
+
 struct TcpUpstream {
     stream: TcpStream,
     token: Token,
@@ -101,6 +115,9 @@ struct TcpUpstream {
     /// Set once the cosmetic payload has been handed to the splice (P4-2), so we
     /// compute it from the engine exactly once, right after the SNI is learned.
     cosmetic_set: bool,
+    /// Deferred DoH classification state (P3). `Settled` for every flow except a
+    /// 443 flow under Filter mode, which peeks the SNI before deciding.
+    classify: Classify,
 }
 
 struct UdpSession {
@@ -150,7 +167,7 @@ pub struct Forwarder {
     outbox: Vec<Vec<u8>>,
     start: StdInstant,
     engine: Option<FilterEngine>,
-    block_encrypted_dns: bool,
+    encrypted_dns_mode: EncryptedDnsMode,
     firewall: HashMap<i32, AppPolicy>,
     transport: u8,
     verdicts: FlowTable<Verdict>,
@@ -202,7 +219,7 @@ impl Forwarder {
             outbox: Vec::new(),
             start: StdInstant::now(),
             engine: None,
-            block_encrypted_dns: config.block_encrypted_dns,
+            encrypted_dns_mode: config.encrypted_dns_mode,
             firewall: HashMap::new(),
             transport: TRANSPORT_OTHER,
             verdicts: FlowTable::new(VERDICT_CACHE_CAP),
@@ -277,8 +294,8 @@ impl Forwarder {
         }
     }
 
-    pub fn set_block_encrypted_dns(&mut self, block: bool) {
-        self.block_encrypted_dns = block;
+    pub fn set_encrypted_dns_mode(&mut self, mode: EncryptedDnsMode) {
+        self.encrypted_dns_mode = mode;
     }
 
     /// Replace the per-app firewall rules. Verdict cache is cleared so new rules
@@ -429,6 +446,15 @@ impl Forwarder {
         uid >= 0 && self.firewall.get(&uid).map_or(false, |p| p.inspect_tls)
     }
 
+    /// Whether an encrypted-DNS (DoT/DoH) flow to `server` can be TLS-intercepted:
+    /// the CA is loaded and this (app, server) hasn't already rejected our leaf.
+    /// Unlike [`app_inspects`](Self::app_inspects), encrypted-DNS interception is
+    /// auto-detected for every app (not opt-in). When this is false under Filter
+    /// mode the flow is dropped, not relayed raw — fail closed.
+    fn can_intercept_enc_dns(&self, uid: i32, server: IpAddr) -> bool {
+        self.tls.is_some() && !(uid >= 0 && self.pinned.contains(&(uid, server)))
+    }
+
     fn now_ms(&self) -> i64 {
         self.start.elapsed().as_millis() as i64
     }
@@ -479,10 +505,6 @@ impl Forwarder {
         let Some(decoded) = adwarden_netstack::decode(packet) else { return };
         match decoded.proto {
             L4::Tcp => {
-                if self.block_encrypted_dns && decoded.dst_port == DOT_PORT {
-                    batcher.push(Event::blocked(&decoded)); // DoT: drop, app connect fails
-                    return;
-                }
                 let verdict = self.verdict(&decoded, PROTO_TCP, env, bridge);
                 if verdict.blocked {
                     // RST the app so it fails fast instead of timing out.
@@ -491,6 +513,19 @@ impl Forwarder {
                     }
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
+                }
+                // DoT (TLS/853): off = relay raw; block = drop; filter = intercept
+                // when we can, else drop (fail closed — never leak it unfiltered).
+                if decoded.dst_port == DOT_PORT {
+                    let intercept = self.encrypted_dns_mode == EncryptedDnsMode::Filter
+                        && self.can_intercept_enc_dns(verdict.uid, decoded.dst);
+                    if self.encrypted_dns_mode != EncryptedDnsMode::Off && !intercept {
+                        if let Some(rst) = reset_for_syn(packet) {
+                            self.outbox.push(rst);
+                        }
+                        batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                        return;
+                    }
                 }
                 if self.coarse_mode(verdict.uid) {
                     self.coarse_add(decoded.length, L4::Tcp, false);
@@ -502,7 +537,15 @@ impl Forwarder {
                 }
             }
             L4::Udp => {
-                if self.block_encrypted_dns && decoded.dst_port == DOT_PORT {
+                // Encrypted DNS over QUIC can't be intercepted (no QUIC stack) and
+                // its SNI is hidden, so under Block or Filter we suppress it to
+                // force the interceptable TCP fallback: DoQ (UDP/853) always, and
+                // DoH3 (UDP/443) to known resolver IPs.
+                if self.encrypted_dns_mode != EncryptedDnsMode::Off
+                    && (decoded.dst_port == DOT_PORT
+                        || (decoded.dst_port == HTTPS_PORT
+                            && adwarden_dns::is_known_doh_ip(decoded.dst)))
+                {
                     batcher.push(Event::blocked(&decoded));
                     return;
                 }
@@ -589,6 +632,17 @@ impl Forwarder {
         // App -> upstream for each active flow.
         for id in self.stack.active_flows() {
             let data = self.stack.tcp_take_app_data(id);
+            let pending = matches!(
+                self.tcp.get(&id).map(|up| &up.classify),
+                Some(Classify::PendingSni(_))
+            );
+            if pending {
+                // A 443 flow still awaiting its SNI: buffer + try to classify.
+                self.classify_pending(id, &data, batcher);
+                self.flush_to_upstream(id);
+                self.flush_to_app(id);
+                continue;
+            }
             let is_mitm = self.tcp.get(&id).map_or(false, |up| up.mitm.is_some());
             if is_mitm {
                 if !data.is_empty() {
@@ -690,11 +744,22 @@ impl Forwarder {
     // --- TCP -------------------------------------------------------------
 
     fn open_tcp(&mut self, id: FlowId, server: SocketAddr, uid: i32, env: &mut jni::JNIEnv, bridge: &Bridge) {
+        // A 443 flow under Filter mode defers its decision until the ClientHello
+        // reveals the SNI (DoH is auto-detected across all apps, by SNI).
+        let defer = self.encrypted_dns_mode == EncryptedDnsMode::Filter
+            && server.port() == HTTPS_PORT;
+        // Otherwise decide now: an encrypted-DNS flow we meant to filter but
+        // couldn't get a splice for must be dropped, not relayed raw.
+        let mitm = if defer { None } else { self.new_mitm_if_intercepting(server, uid) };
+        if !defer && mitm.is_none() && self.requires_enc_dns_intercept(server) {
+            self.stack.tcp_abort(id);
+            return;
+        }
+        let classify = if defer { Classify::PendingSni(Vec::new()) } else { Classify::Settled };
         match self.connect_tcp(server, env, bridge) {
             Some((stream, token)) => {
                 self.stats.tcp_new += 1;
                 self.routes.insert(token, Route::Tcp(id));
-                let mitm = self.new_mitm_if_intercepting(server, uid);
                 self.tcp.insert(
                     id,
                     TcpUpstream {
@@ -709,6 +774,7 @@ impl Forwarder {
                         server,
                         pin_reported: false,
                         cosmetic_set: false,
+                        classify,
                     },
                 );
             }
@@ -720,10 +786,35 @@ impl Forwarder {
         }
     }
 
-    /// Start a TLS interception splice for this flow only if the feature is on,
-    /// the destination is HTTPS, and the owning app opted into inspection.
-    /// Returns `None` (raw relay) otherwise.
+    /// Whether a flow to `server` is an encrypted-DNS flow the datapath is meant
+    /// to intercept under Filter mode (drives the fail-closed drop in `open_tcp`).
+    fn requires_enc_dns_intercept(&self, server: SocketAddr) -> bool {
+        self.encrypted_dns_mode == EncryptedDnsMode::Filter && server.port() == DOT_PORT
+    }
+
+    /// Start a TLS interception splice for this flow, or `None` (raw relay) when
+    /// it shouldn't be intercepted. Two triggers:
+    ///  - encrypted DNS (DoT/853) under Filter mode — auto-detected for every app;
+    ///  - HTTPS (443) for apps that opted into inspection (cosmetics/HAR, P2/P4).
     fn new_mitm_if_intercepting(&mut self, server: SocketAddr, uid: i32) -> Option<TlsMitm> {
+        // Encrypted DNS: DoT filtering. The caller (`on_tun_packet`) has already
+        // dropped flows we can't intercept, so a splice failure here is rare.
+        if self.requires_enc_dns_intercept(server) {
+            if uid >= 0 && self.pinned.contains(&(uid, server.ip())) {
+                return None;
+            }
+            let splice = self.tls.as_ref()?.new_splice_dns(DnsKind::Dot);
+            return match splice {
+                Ok(mitm) => {
+                    self.stats.mitm_new += 1;
+                    Some(mitm)
+                }
+                Err(e) => {
+                    crate::alog!("DoT TlsMitm::new failed ({e}); dropping {}", server);
+                    None
+                }
+            };
+        }
         if server.port() != HTTPS_PORT || !self.app_inspects(uid) {
             return None;
         }
@@ -743,6 +834,80 @@ impl Forwarder {
                 None
             }
         }
+    }
+
+    /// A deferred 443 flow (Filter mode) received app bytes: buffer them, and once
+    /// the ClientHello reveals the SNI, classify the flow as DoH (filter),
+    /// cosmetic (inspected app), or raw — then replay the buffered bytes.
+    fn classify_pending(&mut self, id: FlowId, data: &[u8], batcher: &mut Batcher) {
+        // Buffer + peek (holding the flow's borrow briefly).
+        let (sni, over_cap, buffered, uid, server) = {
+            let Some(up) = self.tcp.get_mut(&id) else { return };
+            let Classify::PendingSni(buf) = &mut up.classify else { return };
+            buf.extend_from_slice(data);
+            let peek = peek_sni(buf);
+            let over_cap = buf.len() > SNI_PEEK_CAP;
+            if matches!(peek, SniPeek::NeedMore) && !over_cap {
+                return; // keep waiting for the rest of the ClientHello
+            }
+            let sni = if let SniPeek::Found(s) = peek { Some(s) } else { None };
+            let buffered = std::mem::take(buf);
+            (sni, over_cap, buffered, up.uid, up.server)
+        };
+        let _ = over_cap;
+        if let Some(up) = self.tcp.get_mut(&id) {
+            up.classify = Classify::Settled;
+        }
+
+        let is_doh = sni.as_deref().map_or(false, adwarden_dns::is_doh_host);
+        if is_doh {
+            // Encrypted DNS: filter if we can, else fail closed (drop).
+            if self.can_intercept_enc_dns(uid, server.ip()) {
+                if let Some(mitm) = self.tls.as_ref().and_then(|t| t.new_splice_dns(DnsKind::Doh).ok()) {
+                    self.stats.mitm_new += 1;
+                    if let Some(up) = self.tcp.get_mut(&id) {
+                        up.mitm = Some(mitm);
+                    }
+                    self.feed_and_drive(id, &buffered, batcher);
+                    return;
+                }
+            }
+            // No CA / pinned / splice error: drop rather than leak DoH.
+            batcher.push(Event::blocked_flow(server).with_uid(uid));
+            self.stack.tcp_abort(id);
+            self.teardown_tcp(id);
+            return;
+        }
+
+        // Not DoH: fall back to today's behavior for a 443 flow — cosmetic
+        // interception for an opted-in app, otherwise raw relay.
+        let cosmetic = server.port() == HTTPS_PORT
+            && self.app_inspects(uid)
+            && !(uid >= 0 && self.pinned.contains(&(uid, server.ip())));
+        if cosmetic {
+            if let Some(mitm) = self.tls.as_ref().and_then(|t| t.new_splice().ok()) {
+                self.stats.mitm_new += 1;
+                if let Some(up) = self.tcp.get_mut(&id) {
+                    up.mitm = Some(mitm);
+                }
+                self.feed_and_drive(id, &buffered, batcher);
+                return;
+            }
+        }
+        // Raw relay: hand the buffered ClientHello (and everything after) upstream.
+        if let Some(up) = self.tcp.get_mut(&id) {
+            up.to_upstream.extend_from_slice(&buffered);
+        }
+    }
+
+    /// Feed buffered app bytes into a just-attached splice and advance it.
+    fn feed_and_drive(&mut self, id: FlowId, data: &[u8], batcher: &mut Batcher) {
+        if !data.is_empty() {
+            if let Some(mitm) = self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
+                mitm.recv_from_app(data);
+            }
+        }
+        self.drive_mitm(id, batcher);
     }
 
     fn connect_tcp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(TcpStream, Token)> {
@@ -799,15 +964,37 @@ impl Forwarder {
     /// Advance a flow's TLS splice: pump it, queue the produced TLS records
     /// toward each peer, and on completion/failure tear the flow down.
     fn drive_mitm(&mut self, id: FlowId, batcher: &mut Batcher) {
-        let io = match self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
-            Some(mitm) => mitm.pump(),
-            None => return,
+        let is_dns = self
+            .tcp
+            .get(&id)
+            .and_then(|up| up.mitm.as_ref())
+            .map_or(false, |m| m.is_dns());
+        let io = if is_dns {
+            // Encrypted-DNS path: the filter needs a block decision per query.
+            // Split-borrow the engine (immutable) and this flow's mitm (mutable).
+            let engine = self.engine.as_ref();
+            let Some(up) = self.tcp.get_mut(&id) else { return };
+            let Some(mitm) = up.mitm.as_mut() else { return };
+            let mut is_blocked = |name: &str| engine.map_or(false, |e| e.is_blocked_domain(name));
+            let io = mitm.pump_dns(&mut is_blocked);
+            let hits = mitm.take_dns_blocked();
+            let (uid, server) = (up.uid, up.server);
+            for name in hits {
+                batcher.push(Event::enc_dns_blocked(uid, server, name));
+            }
+            io
+        } else {
+            let io = match self.tcp.get_mut(&id).and_then(|up| up.mitm.as_mut()) {
+                Some(mitm) => mitm.pump(),
+                None => return,
+            };
+            // The pump may have just learned the SNI; provision cosmetics before
+            // its decrypted output is drained toward the app (P4-2). This runs
+            // before any response byte can exist (the upstream session is created
+            // lazily on the same pump the SNI is learned, so it hasn't handshaked).
+            self.provision_cosmetics(id);
+            io
         };
-        // The pump may have just learned the SNI; provision cosmetics before its
-        // decrypted output is drained toward the app (P4-2). This runs before any
-        // response byte can exist (the upstream session is created lazily on the
-        // same pump SNI is learned, so it hasn't handshaked yet).
-        self.provision_cosmetics(id);
         if let Some(up) = self.tcp.get_mut(&id) {
             up.to_upstream.extend_from_slice(&io.to_upstream);
             up.to_app.extend_from_slice(&io.to_app);
