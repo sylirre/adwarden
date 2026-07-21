@@ -88,7 +88,10 @@ object NativeEventCodec {
                     verdict = verdict,
                     blockedDomain = if (kind == KIND_DNS_BLOCK) domain else null,
                     tlsPinned = kind == KIND_TLS_PINNED,
-                    host = if (kind == KIND_TLS_PINNED) domain else null,
+                    // An allowed flow (KIND_FLOW) now carries its decoded DNS query
+                    // name or TLS SNI in the same wire `domain` field, surfaced here
+                    // as the host; a TLS-pinned flow carries the SNI likewise.
+                    host = if (kind == KIND_TLS_PINNED || kind == KIND_FLOW) domain else null,
                 ),
             )
         }
@@ -130,6 +133,7 @@ object NativeEventCodec {
     private const val FIXED_LEN = 4 + 4 + 4 + 4 + 8 + 16 + 16 + 2
 
     // Event kinds — must match rust/core/src/event.rs.
+    private const val KIND_FLOW = 0
     private const val KIND_DNS_BLOCK = 1
     private const val KIND_TLS_PINNED = 2
     private const val KIND_COARSE = 3

@@ -111,13 +111,14 @@ class MainViewModel @Inject constructor(
             .map { list -> list.map { RankedItem(it.key, it.count) } }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    // uid→label, resolved once (installed apps rarely change within a session).
-    private val uidLabels: StateFlow<Map<Int, String>> =
+    /** uid→app label, resolved once (installed apps rarely change within a session).
+     *  Public so the Traffic detail view can attribute a flow to its owning app. */
+    val appLabels: StateFlow<Map<Int, String>> =
         flow { emit(inventory.load().associate { it.uid to it.label }) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     val topBlockedApps: StateFlow<List<RankedItem>> =
-        combine(statsRepository.topApps(weekStartDay, TOP_LIMIT), uidLabels) { tallies, labels ->
+        combine(statsRepository.topApps(weekStartDay, TOP_LIMIT), appLabels) { tallies, labels ->
             tallies.map { RankedItem(labels[it.key.toIntOrNull()] ?: "App ${it.key}", it.count) }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

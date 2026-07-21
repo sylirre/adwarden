@@ -79,6 +79,24 @@
     <string name="traffic_row_meta">from :%1$d · IPv%2$d · %3$s</string>
     <string name="traffic_empty_title">No connections yet</string>
     <string name="traffic_empty_subtitle">Turn on protection to watch traffic live</string>
+    <string name="traffic_monitor">Live monitoring</string>
+    <string name="traffic_off_title">Live monitoring is off</string>
+    <string name="traffic_off_subtitle">Turn it on to watch connections in real time. This does not change filtering.</string>
+    <string name="traffic_blocked_badge">Blocked</string>
+    <!-- Traffic detail -->
+    <string name="traffic_detail_title">Request details</string>
+    <string name="traffic_detail_protocol">Protocol</string>
+    <string name="traffic_detail_source">Source</string>
+    <string name="traffic_detail_dest">Destination</string>
+    <string name="traffic_detail_app">Application</string>
+    <string name="traffic_detail_status">Status</string>
+    <string name="traffic_detail_decoded">Decoded data</string>
+    <string name="traffic_status_allowed">Allowed</string>
+    <string name="traffic_status_blocked">Blocked</string>
+    <string name="traffic_detail_unknown">Unknown</string>
+    <string name="traffic_detail_block">Block</string>
+    <string name="traffic_detail_close">Close</string>
+    <string name="traffic_block_added">Blocking rule added for %1$s</string>
 
     <!-- Filters -->
     <string name="filters_title">Filters</string>

@@ -128,6 +128,27 @@ impl Event {
         }
     }
 
+    /// An allowed TCP flow surfaced by its upstream endpoint only — e.g. an SNI
+    /// observed on a raw-relayed HTTPS flow while the live log is open. `src` is
+    /// zeroed (the app's local port isn't on hand at emit time); attach the host
+    /// with [`with_domain`](Self::with_domain).
+    pub fn flow_to(server: SocketAddr) -> Event {
+        Event {
+            kind: KIND_FLOW,
+            ip_version: if server.is_ipv4() { 4 } else { 6 },
+            proto: PROTO_TCP,
+            verdict: VERDICT_ALLOW,
+            uid: -1,
+            src_port: 0,
+            dst_port: server.port(),
+            length: 0,
+            timestamp_ms: now_ms(),
+            src: [0u8; 16],
+            dst: ip_bytes(server.ip()),
+            domain: None,
+        }
+    }
+
     /// A DNS query blocked by the filter engine, carrying the sinkholed domain.
     pub fn blocked_domain(decoded: &Decoded, domain: String) -> Event {
         Event::from_decoded(decoded, KIND_DNS_BLOCK, VERDICT_BLOCK, Some(domain))
@@ -208,6 +229,13 @@ impl Event {
     /// Attach the owning app UID (from the firewall lookup).
     pub fn with_uid(mut self, uid: i32) -> Event {
         self.uid = uid;
+        self
+    }
+
+    /// Attach a decoded application-layer host (DNS query name or TLS SNI) to a
+    /// flow event. Rides in the existing `domain` wire field — no layout change.
+    pub fn with_domain(mut self, domain: Option<String>) -> Event {
+        self.domain = domain;
         self
     }
 

@@ -115,6 +115,38 @@ class NativeEventCodecTest {
     }
 
     @Test
+    fun decodesAllowFlowWithDecodedHost() {
+        // An allowed flow (KIND_FLOW) now carries its decoded DNS query name / TLS
+        // SNI in the wire `domain` field, surfaced as `host` (not blockedDomain).
+        val host = "example.com"
+        val payload = 4 + (4 + 4 + 4 + 4 + 8 + 16 + 16 + 2 + host.length)
+        val buf = ByteBuffer.allocate(payload).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(1)
+        buildEvent(
+            buf,
+            kind = 0, // FLOW
+            ipVersion = 4,
+            proto = 1, // UDP (a DNS query)
+            verdict = 0, // ALLOW
+            uid = 10500,
+            srcPort = 40001,
+            dstPort = 53,
+            length = 44,
+            timestampMs = 777L,
+            src = byteArrayOf(10, 0, 0, 2),
+            dst = byteArrayOf(1, 1, 1, 1),
+            domain = host,
+        )
+
+        val e = NativeEventCodec.decode(buf.array()).single()
+        assertEquals(Verdict.ALLOW, e.verdict)
+        assertEquals(host, e.host)
+        assertNull(e.blockedDomain)
+        assertEquals(false, e.tlsPinned)
+        assertEquals(10500, e.uid)
+    }
+
+    @Test
     fun decodesTlsPinnedFlowAsMetadataOnly() {
         val host = "api.bank.example"
         val payload = 4 + (4 + 4 + 4 + 4 + 8 + 16 + 16 + 2 + host.length)

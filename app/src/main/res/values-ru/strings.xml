@@ -71,6 +71,24 @@
     <string name="traffic_row_meta">с :%1$d · IPv%2$d · %3$s</string>
     <string name="traffic_empty_title">Соединений пока нет</string>
     <string name="traffic_empty_subtitle">Включите защиту, чтобы видеть трафик в реальном времени</string>
+    <string name="traffic_monitor">Мониторинг</string>
+    <string name="traffic_off_title">Мониторинг выключен</string>
+    <string name="traffic_off_subtitle">Включите его, чтобы видеть соединения в реальном времени. На фильтрацию это не влияет.</string>
+    <string name="traffic_blocked_badge">Заблокировано</string>
+    <!-- Traffic detail -->
+    <string name="traffic_detail_title">Сведения о запросе</string>
+    <string name="traffic_detail_protocol">Протокол</string>
+    <string name="traffic_detail_source">Источник</string>
+    <string name="traffic_detail_dest">Назначение</string>
+    <string name="traffic_detail_app">Приложение</string>
+    <string name="traffic_detail_status">Статус</string>
+    <string name="traffic_detail_decoded">Расшифрованные данные</string>
+    <string name="traffic_status_allowed">Разрешён</string>
+    <string name="traffic_status_blocked">Заблокирован</string>
+    <string name="traffic_detail_unknown">Неизвестно</string>
+    <string name="traffic_detail_block">Заблокировать</string>
+    <string name="traffic_detail_close">Закрыть</string>
+    <string name="traffic_block_added">Добавлено правило блокировки для %1$s</string>
 
     <string name="filters_title">Фильтры</string>
     <plurals name="filters_rules_active">

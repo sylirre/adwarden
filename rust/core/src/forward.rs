@@ -90,6 +90,16 @@ enum Classify {
 /// give up peeking and treat the flow as non-DoH.
 const SNI_PEEK_CAP: usize = 16 * 1024;
 
+/// Outcome of inspecting an allowed-so-far DNS datagram in [`Forwarder::handle_dns`].
+enum DnsOutcome {
+    /// The name matched the blocklist: an NXDOMAIN was already injected toward the
+    /// app and a block event emitted; the query must not be forwarded.
+    Sinkholed,
+    /// Forward the query upstream. Carries the decoded query name (when it parsed)
+    /// so the allowed flow event can surface the domain in the live log.
+    Forward(Option<String>),
+}
+
 struct TcpUpstream {
     stream: TcpStream,
     token: Token,
@@ -115,6 +125,9 @@ struct TcpUpstream {
     /// Set once the cosmetic payload has been handed to the splice (P4-2), so we
     /// compute it from the engine exactly once, right after the SNI is learned.
     cosmetic_set: bool,
+    /// Set once this flow's SNI has been surfaced to the live log, so the passive
+    /// observer (log-open only) reports the host exactly once per flow.
+    sni_reported: bool,
     /// Deferred DoH classification state (P3). `Settled` for every flow except a
     /// 443 flow under Filter mode, which peeks the SNI before deciding.
     classify: Classify,
@@ -400,10 +413,13 @@ impl Forwarder {
     /// Resolve (and cache) the firewall verdict for a flow. Unknown UIDs and
     /// unruled apps are allowed.
     fn verdict(&mut self, decoded: &Decoded, proto: i32, env: &mut jni::JNIEnv, bridge: &Bridge) -> Verdict {
-        // No per-app rules -> allow everything without the (per-flow, binder)
-        // getConnectionOwnerUid upcall. This keeps DNS/browsing off the JNI path
-        // entirely in the common case.
-        if self.firewall.is_empty() {
+        // No per-app rules -> normally allow everything without the (per-flow,
+        // binder) getConnectionOwnerUid upcall, keeping DNS/browsing off the JNI
+        // path entirely in the common case. But while the live log is open we
+        // still resolve the owning app so the traffic view can attribute flows;
+        // policy_blocks() returns false for an unruled app, so this never changes
+        // the allow/block decision — only the reported uid.
+        if self.firewall.is_empty() && !self.log_open {
             return Verdict { blocked: false, uid: -1 };
         }
         let key = FlowKey::new(proto as u8, decoded.src, decoded.src_port, decoded.dst, decoded.dst_port);
@@ -567,13 +583,22 @@ impl Forwarder {
                 }
                 let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if let Some(dgram) = udp::parse(packet) {
-                    if is_dns && self.handle_dns(&decoded, &dgram, batcher) {
-                        return; // sinkholed: NXDOMAIN already injected
-                    }
+                    // For DNS, learn the query name up front (and sinkhole blocked
+                    // names) so the allowed flow event can carry the decoded domain.
+                    let dns_name = if is_dns {
+                        match self.handle_dns(&decoded, &dgram, batcher) {
+                            DnsOutcome::Sinkholed => return, // NXDOMAIN already injected
+                            DnsOutcome::Forward(name) => name,
+                        }
+                    } else {
+                        None
+                    };
                     if self.coarse_mode(verdict.uid) {
                         self.coarse_add(decoded.length, L4::Udp, is_dns);
                     } else {
-                        batcher.push(Event::flow(&decoded).with_uid(verdict.uid));
+                        batcher.push(
+                            Event::flow(&decoded).with_uid(verdict.uid).with_domain(dns_name),
+                        );
                     }
                     // Allowed DNS goes to the real upstream (the app targeted a
                     // tunnel-local placeholder); everything else keeps its dst.
@@ -602,22 +627,31 @@ impl Forwarder {
     }
 
     /// Intercept a DNS query: if the engine blocks the name, inject an NXDOMAIN
-    /// response toward the app and report a block. Returns true when sinkholed.
-    fn handle_dns(&mut self, decoded: &Decoded, dgram: &udp::UdpDatagram, batcher: &mut Batcher) -> bool {
-        let Some(query) = adwarden_dns::parse_query(&dgram.payload) else { return false };
+    /// response toward the app and report a block ([`DnsOutcome::Sinkholed`]).
+    /// Otherwise return [`DnsOutcome::Forward`] carrying the decoded query name
+    /// (when it parsed) so the allowed flow event can surface the domain.
+    fn handle_dns(
+        &mut self,
+        decoded: &Decoded,
+        dgram: &udp::UdpDatagram,
+        batcher: &mut Batcher,
+    ) -> DnsOutcome {
+        let Some(query) = adwarden_dns::parse_query(&dgram.payload) else {
+            return DnsOutcome::Forward(None);
+        };
         let blocked = self
             .engine
             .as_ref()
             .map_or(false, |engine| engine.is_blocked_domain(&query.name));
         if !blocked {
-            return false;
+            return DnsOutcome::Forward(Some(query.name));
         }
         let response = adwarden_dns::synthesize_nxdomain(&dgram.payload, &query);
         if let Some(packet) = udp::build_reply(dgram.dst, dgram.src, &response) {
             self.outbox.push(packet);
         }
         batcher.push(Event::blocked_domain(decoded, query.name));
-        true
+        DnsOutcome::Sinkholed
     }
 
     /// Advance the stack and pump both directions of every flow.
@@ -656,6 +690,13 @@ impl Forwarder {
                 // even when the app sent nothing this pass.
                 self.drive_mitm(id, batcher);
             } else if !data.is_empty() {
+                // Raw relay. While the live log is open, passively peek the SNI so
+                // the traffic view can name an otherwise IP-only HTTPS flow. The
+                // bytes are relayed unchanged below — pure observation, so this
+                // never affects filtering or forwarding.
+                if self.log_open {
+                    self.observe_sni(id, &data, batcher);
+                }
                 if let Some(up) = self.tcp.get_mut(&id) {
                     up.to_upstream.extend_from_slice(&data);
                 }
@@ -774,6 +815,7 @@ impl Forwarder {
                         server,
                         pin_reported: false,
                         cosmetic_set: false,
+                        sni_reported: false,
                         classify,
                     },
                 );
@@ -879,8 +921,21 @@ impl Forwarder {
             return;
         }
 
-        // Not DoH: fall back to today's behavior for a 443 flow — cosmetic
-        // interception for an opted-in app, otherwise raw relay.
+        // Not DoH: surface the SNI to the live log (log-open only) for both the
+        // cosmetic-MITM and raw-relay outcomes below — these flows are classified
+        // here and never reach the raw-relay observer in `service`. Mark it
+        // reported so that observer can't also emit a duplicate. Observational.
+        if self.log_open {
+            if let Some(host) = sni.as_ref() {
+                batcher.push(Event::flow_to(server).with_uid(uid).with_domain(Some(host.clone())));
+            }
+            if let Some(up) = self.tcp.get_mut(&id) {
+                up.sni_reported = true;
+            }
+        }
+
+        // Fall back to today's behavior for a 443 flow — cosmetic interception for
+        // an opted-in app, otherwise raw relay.
         let cosmetic = server.port() == HTTPS_PORT
             && self.app_inspects(uid)
             && !(uid >= 0 && self.pinned.contains(&(uid, server.ip())));
@@ -897,6 +952,24 @@ impl Forwarder {
         // Raw relay: hand the buffered ClientHello (and everything after) upstream.
         if let Some(up) = self.tcp.get_mut(&id) {
             up.to_upstream.extend_from_slice(&buffered);
+        }
+    }
+
+    /// Passively peek the ClientHello SNI on a raw-relayed HTTPS flow and surface
+    /// it once as a flow event, so the live log can show the host for a flow that
+    /// otherwise carries only an IP:port. Best-effort (only this pass's bytes are
+    /// examined) and observational — it never buffers, delays, or alters the
+    /// relayed bytes, so filtering/forwarding is untouched. Log-open only.
+    fn observe_sni(&mut self, id: FlowId, data: &[u8], batcher: &mut Batcher) {
+        let (uid, server) = match self.tcp.get(&id) {
+            Some(up) if !up.sni_reported && up.server.port() == HTTPS_PORT => (up.uid, up.server),
+            _ => return,
+        };
+        if let SniPeek::Found(host) = peek_sni(data) {
+            batcher.push(Event::flow_to(server).with_uid(uid).with_domain(Some(host)));
+            if let Some(up) = self.tcp.get_mut(&id) {
+                up.sni_reported = true;
+            }
         }
     }
 

@@ -45,6 +45,10 @@ data class AppSettings(
     val cosmeticElementHiding: Boolean = false,
     /** Scriptlet injection (P4): gated behind element hiding + a downloaded pack. */
     val cosmeticScriptlets: Boolean = false,
+    /** Live traffic monitoring: whether the Traffic screen streams and displays
+     *  per-flow telemetry. Off by default; a pure display/telemetry preference that
+     *  never affects filtering (it only gates the [LiveLogState] demand signal). */
+    val liveTrafficMonitoring: Boolean = false,
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -76,6 +80,7 @@ class SettingsRepository @Inject constructor(
             desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
             cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
             cosmeticScriptlets = prefs[KEY_COSMETIC_SCRIPTLETS] ?: false,
+            liveTrafficMonitoring = prefs[KEY_LIVE_TRAFFIC] ?: false,
         )
     }
 
@@ -100,6 +105,9 @@ class SettingsRepository @Inject constructor(
     suspend fun setCosmeticScriptlets(value: Boolean) =
         store.edit { it[KEY_COSMETIC_SCRIPTLETS] = value }
 
+    suspend fun setLiveTrafficMonitoring(value: Boolean) =
+        store.edit { it[KEY_LIVE_TRAFFIC] = value }
+
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -111,5 +119,6 @@ class SettingsRepository @Inject constructor(
         val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
         val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")
         val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")
+        val KEY_LIVE_TRAFFIC = booleanPreferencesKey("live_traffic_monitoring")
     }
 }
