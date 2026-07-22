@@ -15,6 +15,7 @@ mod config;
 mod event;
 mod ffi;
 mod forward;
+mod proxy;
 mod runtime;
 
 pub use ffi::ABI_VERSION;

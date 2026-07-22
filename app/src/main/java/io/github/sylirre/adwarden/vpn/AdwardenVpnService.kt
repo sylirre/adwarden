@@ -34,6 +34,7 @@ import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.FilterRepository
 import io.github.sylirre.adwarden.data.StatsRepository
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
 import io.github.sylirre.adwarden.firewall.NetworkStateMonitor
 import dagger.hilt.android.AndroidEntryPoint
@@ -429,6 +430,23 @@ class AdwardenVpnService : VpnService() {
                 if (handle != 0L) NativeCore.nativeSetLogOpen(handle, open)
             }
         }
+
+        // The upstream proxy is a start-time setting (the dial path is fixed for a
+        // session), so a change re-establishes the tunnel to rebuild the native
+        // session with the new config. `drop(1)` skips the value already applied at
+        // start; distinctUntilChanged means only real edits trigger a reconnect.
+        scope.launch {
+            settings.settings
+                .map { listOf(it.proxyKind, it.proxyHost, it.proxyPort, it.proxyUsername, it.proxyPassword) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    if (running) {
+                        Log.i(TAG, "Proxy config changed -> re-establishing tunnel")
+                        v6Mutex.withLock { reestablishTunnel(tunnelHasV6) }
+                    }
+                }
+        }
     }
 
     /**
@@ -511,6 +529,11 @@ class AdwardenVpnService : VpnService() {
             val requested: Boolean,
             val hiding: Boolean,
             val scriptlets: Boolean,
+            val proxyKind: ProxyKind,
+            val proxyHost: String,
+            val proxyPort: Int,
+            val proxyUser: String,
+            val proxyPass: String,
         )
         val cfg = runBlocking {
             val s = settings.settings.first()
@@ -520,6 +543,11 @@ class AdwardenVpnService : VpnService() {
                 s.interceptTls,
                 s.cosmeticElementHiding,
                 s.cosmeticScriptlets,
+                s.proxyKind,
+                s.proxyHost,
+                s.proxyPort,
+                s.proxyUsername,
+                s.proxyPassword,
             )
         }
         if (cfg.requested && cfg.material == null) {
@@ -535,6 +563,17 @@ class AdwardenVpnService : VpnService() {
                 put("intercept_tls", true)
                 put("ca_cert_pem", it.certPem)
                 put("ca_key_pem", it.keyPem)
+            }
+            // Upstream proxy (P5): a start-time setting. The native side resolves a
+            // hostname `host` (our process bypasses the tunnel), so we pass it as-is.
+            if (cfg.proxyKind != ProxyKind.NONE && cfg.proxyHost.isNotBlank() && cfg.proxyPort in 1..65535) {
+                put("proxy", JSONObject().apply {
+                    put("kind", cfg.proxyKind.name.lowercase())
+                    put("host", cfg.proxyHost)
+                    put("port", cfg.proxyPort)
+                    if (cfg.proxyUser.isNotEmpty()) put("username", cfg.proxyUser)
+                    if (cfg.proxyPass.isNotEmpty()) put("password", cfg.proxyPass)
+                })
             }
         }.toString()
     }

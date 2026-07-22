@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use crate::proxy::ProxyConfig;
+
 fn default_mtu() -> usize {
     1500
 }
@@ -59,6 +61,12 @@ pub struct Config {
     /// `cosmetic_element_hiding` and a loaded scriptlet resource pack. Off by default.
     #[serde(default)]
     pub cosmetic_scriptlets: bool,
+    /// Upstream proxy (P5): forward allowed flows through an HTTP/HTTPS/SOCKS5
+    /// proxy instead of dialing origins directly. A start-time setting (the dial
+    /// path is fixed for a session); toggling it takes effect on the next VPN
+    /// start / re-establish. Absent ⇒ disabled (direct).
+    #[serde(default)]
+    pub proxy: ProxyConfig,
 }
 
 impl Default for Config {
@@ -73,6 +81,7 @@ impl Default for Config {
             log_open: false,
             cosmetic_element_hiding: false,
             cosmetic_scriptlets: false,
+            proxy: ProxyConfig::default(),
         }
     }
 }

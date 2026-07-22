@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Code
@@ -30,8 +31,10 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.VpnKey
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -46,12 +49,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.sylirre.adwarden.BuildConfig
 import io.github.sylirre.adwarden.MainViewModel
+import io.github.sylirre.adwarden.ProxyUiState
 import io.github.sylirre.adwarden.R
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.ThemeMode
 import io.github.sylirre.adwarden.ui.components.AdwCard
 import io.github.sylirre.adwarden.ui.components.SectionTitle
@@ -66,6 +73,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
     val cosmeticElementHiding by viewModel.cosmeticElementHiding.collectAsStateWithLifecycle()
     val cosmeticScriptlets by viewModel.cosmeticScriptlets.collectAsStateWithLifecycle()
+    val proxy by viewModel.proxy.collectAsStateWithLifecycle()
     val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
     var showCaWizard by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -160,6 +168,19 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     Icons.Rounded.Info,
                     stringResource(R.string.settings_cosmetic_requires),
                     stringResource(R.string.settings_cosmetic_requires_body),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        SectionTitle(stringResource(R.string.settings_proxy))
+        AdwCard(Modifier.fillMaxWidth()) {
+            Column {
+                ProxySection(proxy = proxy, onApply = viewModel::setProxy)
+                InfoRow(
+                    Icons.Rounded.Info,
+                    stringResource(R.string.settings_proxy_note),
+                    stringResource(R.string.settings_proxy_note_body),
                 )
             }
         }
@@ -318,6 +339,125 @@ private fun EncryptedDnsPicker(selected: EncryptedDnsMode, onSelect: (EncryptedD
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun ProxySection(
+    proxy: ProxyUiState,
+    onApply: (ProxyKind, String, Int, String, String) -> Unit,
+) {
+    // Seed local edit state from the saved config; re-seed whenever it changes
+    // (e.g. right after Apply, when the DataStore flow re-emits the new values).
+    var kind by remember(proxy) { mutableStateOf(proxy.kind) }
+    var host by remember(proxy) { mutableStateOf(proxy.host) }
+    var port by remember(proxy) { mutableStateOf(if (proxy.port in 1..65535) proxy.port.toString() else "") }
+    var username by remember(proxy) { mutableStateOf(proxy.username) }
+    var password by remember(proxy) { mutableStateOf(proxy.password) }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(
+            stringResource(R.string.settings_proxy_type),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(10.dp))
+        ProxyKindPicker(selected = kind, onSelect = { kind = it })
+
+        if (kind != ProxyKind.NONE) {
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text(stringResource(R.string.settings_proxy_host)) },
+                    singleLine = true,
+                    modifier = Modifier.weight(2f),
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { new -> port = new.filter { it.isDigit() }.take(5) },
+                    label = { Text(stringResource(R.string.settings_proxy_port)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text(stringResource(R.string.settings_proxy_username)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text(stringResource(R.string.settings_proxy_password)) },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+        val portNum = port.toIntOrNull() ?: 0
+        val valid = kind == ProxyKind.NONE || (host.isNotBlank() && portNum in 1..65535)
+        val dirty = kind != proxy.kind || host.trim() != proxy.host ||
+            portNum != proxy.port || username != proxy.username || password != proxy.password
+        Button(
+            onClick = { onApply(kind, host.trim(), portNum, username, password) },
+            enabled = valid && dirty,
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            Text(stringResource(R.string.settings_proxy_apply))
+        }
+    }
+}
+
+@Composable
+private fun ProxyKindPicker(selected: ProxyKind, onSelect: (ProxyKind) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ProxyKind.entries.forEach { kind ->
+            val label = when (kind) {
+                ProxyKind.NONE -> stringResource(R.string.settings_proxy_off)
+                ProxyKind.HTTP -> "HTTP"
+                ProxyKind.HTTPS -> "HTTPS"
+                ProxyKind.SOCKS5 -> "SOCKS5"
+            }
+            val chosen = kind == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(AdwShapes.Field)
+                    .background(
+                        if (chosen) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                    )
+                    .border(
+                        1.dp,
+                        if (chosen) Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
+                        AdwShapes.Field,
+                    )
+                    .selectable(selected = chosen, role = Role.RadioButton) { onSelect(kind) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    color = if (chosen) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

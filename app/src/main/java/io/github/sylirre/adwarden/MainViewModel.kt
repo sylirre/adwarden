@@ -9,6 +9,7 @@ import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.StatsRepository
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
 import io.github.sylirre.adwarden.data.settings.ThemeMode
 import io.github.sylirre.adwarden.firewall.AppInventory
@@ -29,6 +30,15 @@ import javax.inject.Inject
 
 /** A ranked dashboard row: a display [label] and its [count]. */
 data class RankedItem(val label: String, val count: Long)
+
+/** Snapshot of the upstream-proxy settings for the proxy config form (P5). */
+data class ProxyUiState(
+    val kind: ProxyKind = ProxyKind.NONE,
+    val host: String = "",
+    val port: Int = 0,
+    val username: String = "",
+    val password: String = "",
+)
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
@@ -71,6 +81,14 @@ class MainViewModel @Inject constructor(
     val cosmeticScriptlets: StateFlow<Boolean> = settings.settings
         .map { it.cosmeticScriptlets }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.cosmeticScriptlets)
+
+    val proxy: StateFlow<ProxyUiState> = settings.settings
+        .map { ProxyUiState(it.proxyKind, it.proxyHost, it.proxyPort, it.proxyUsername, it.proxyPassword) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            ProxyUiState(initial.proxyKind, initial.proxyHost, initial.proxyPort, initial.proxyUsername, initial.proxyPassword),
+        )
 
     // The interception CA cert (PEM), loaded lazily when the install wizard opens.
     // Null until generated/loaded.
@@ -163,6 +181,12 @@ class MainViewModel @Inject constructor(
     /** Ensure the CA exists and publish its cert PEM for the install wizard. */
     fun prepareCaForInstall() {
         viewModelScope.launch { _caCertPem.value = ca.caCertPem() }
+    }
+
+    /** Persist the proxy config. It's a start-time setting, so the running tunnel
+     *  re-establishes to apply it (see AdwardenVpnService's proxy observer). */
+    fun setProxy(kind: ProxyKind, host: String, port: Int, username: String, password: String) {
+        viewModelScope.launch { settings.setProxy(kind, host, port, username, password) }
     }
 
     private companion object {

@@ -136,6 +136,16 @@
     <string name="settings_run_scriptlets_sub">Для опытных: внедряет JavaScript на страницы для обхода антиадблока и рекламных скриптов. Загружает пакет скриптлетов.</string>
     <string name="settings_cosmetic_requires">Требуется проверка</string>
     <string name="settings_cosmetic_requires_body">Косметическая фильтрация работает только в приложениях с включённой проверкой HTTPS (и установленным ЦС Adwarden) — Chrome и Firefox. Другие приложения не затрагиваются.</string>
+    <string name="settings_proxy">Прокси</string>
+    <string name="settings_proxy_type">Направлять трафик через прокси</string>
+    <string name="settings_proxy_off">Выкл</string>
+    <string name="settings_proxy_host">Хост</string>
+    <string name="settings_proxy_port">Порт</string>
+    <string name="settings_proxy_username">Имя пользователя (необязательно)</string>
+    <string name="settings_proxy_password">Пароль (необязательно)</string>
+    <string name="settings_proxy_apply">Применить и переподключить</string>
+    <string name="settings_proxy_note">Как работает перенаправление</string>
+    <string name="settings_proxy_note_body">Разрешённые TCP-соединения направляются через прокси; если он недоступен, соединение блокируется, а не идёт в обход. Прокси SOCKS5 также передаёт через себя DNS и другой UDP-трафик (например, QUIC). Прокси HTTP/HTTPS не умеет передавать UDP, поэтому DNS разрешается напрямую, а UDP-приложения переходят на TCP. Изменение этих настроек переподключает VPN.</string>
     <string name="settings_system_integration">Интеграция с системой</string>
     <string name="settings_always_on">Постоянная VPN</string>
     <string name="settings_always_on_sub">Откройте настройки VPN Android, чтобы Adwarden был всегда подключён и при желании блокировал трафик без VPN.</string>

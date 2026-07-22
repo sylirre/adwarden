@@ -17,6 +17,9 @@ serde_json.workspace = true
 mio.workspace = true
 socket2.workspace = true
 libc.workspace = true
+# HTTPS-proxy transport (P5): a rustls client session wrapping the connection to
+# a TLS proxy. Already built transitively via adwarden-tls, so this is free.
+rustls.workspace = true
 adwarden-netstack = { path = "../netstack" }
 adwarden-dns = { path = "../dns" }
 adwarden-filter = { path = "../filter" }

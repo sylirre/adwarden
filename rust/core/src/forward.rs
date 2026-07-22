@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
@@ -30,6 +30,7 @@ use adwarden_tls::{peek_sni, write_har, DnsKind, HttpTransaction, MitmConfigs, S
 use crate::bridge::Bridge;
 use crate::config::{Config, EncryptedDnsMode};
 use crate::event::{Batcher, Event};
+use crate::proxy::{self, Handshake, Proxy, Step as ProxyStep};
 
 const DOT_PORT: u16 = 853;
 const HTTPS_PORT: u16 = 443;
@@ -74,6 +75,10 @@ struct UdpKey {
 enum Route {
     Tcp(FlowId),
     Udp(UdpKey),
+    /// SOCKS5 UDP ASSOCIATE control connection (keeps the association alive).
+    SocksCtrl(UdpKey),
+    /// SOCKS5 UDP ASSOCIATE relay socket (carries the encapsulated datagrams).
+    SocksRelay(UdpKey),
 }
 
 /// Whether a flow's interception has been decided, or is waiting on the SNI.
@@ -100,8 +105,147 @@ enum DnsOutcome {
     Forward(Option<String>),
 }
 
-struct TcpUpstream {
+/// The upstream transport for a TCP flow. A plaintext socket (`Plain`) — used for
+/// a direct dial, or a connection to an HTTP/SOCKS5 proxy — or a rustls session
+/// to an HTTPS proxy (`Tls`), through which the relayed bytes (and the CONNECT
+/// handshake) tunnel. The relay code above works in *plaintext*; `UpstreamIo`
+/// hides whether that plaintext rides a bare socket or a TLS session to the proxy.
+enum UpstreamIo {
+    Plain(TcpStream),
+    Tls(Box<ProxyTls>),
+}
+
+/// A TLS client session to an HTTPS proxy, wrapping the underlying socket.
+struct ProxyTls {
     stream: TcpStream,
+    conn: rustls::ClientConnection,
+}
+
+impl ProxyTls {
+    /// Build a client session verifying the proxy against the bundled root store
+    /// (an HTTPS proxy with a publicly-trusted cert). `None` on config/name error.
+    fn new(stream: TcpStream, server_name: &str) -> Option<ProxyTls> {
+        let config = adwarden_tls::upstream_client_config().ok()?;
+        let name = rustls::pki_types::ServerName::try_from(server_name.to_string()).ok()?;
+        let conn = rustls::ClientConnection::new(config, name).ok()?;
+        Some(ProxyTls { stream, conn })
+    }
+
+    /// Move TLS records between the socket and rustls: flush queued output, then
+    /// read and process available input. Nonblocking — `WouldBlock` means "done
+    /// for now". Advances the handshake as a side effect.
+    fn pump(&mut self) -> io::Result<()> {
+        while self.conn.wants_write() {
+            match self.conn.write_tls(&mut self.stream) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            }
+        }
+        loop {
+            match self.conn.read_tls(&mut self.stream) {
+                Ok(0) => break, // socket EOF
+                Ok(_) => self
+                    .conn
+                    .process_new_packets()
+                    .map(|_| ())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl UpstreamIo {
+    /// The underlying socket, for mio (de)registration and error polling.
+    fn source(&mut self) -> &mut TcpStream {
+        match self {
+            UpstreamIo::Plain(s) => s,
+            UpstreamIo::Tls(t) => &mut t.stream,
+        }
+    }
+
+    /// Whether an HTTPS-proxy TLS handshake is still in progress.
+    fn tls_handshaking(&self) -> bool {
+        match self {
+            UpstreamIo::Plain(_) => false,
+            UpstreamIo::Tls(t) => t.conn.is_handshaking(),
+        }
+    }
+
+    /// Drive the TLS state machine (no-op for a plaintext transport).
+    fn pump_tls(&mut self) -> io::Result<()> {
+        match self {
+            UpstreamIo::Plain(_) => Ok(()),
+            UpstreamIo::Tls(t) => t.pump(),
+        }
+    }
+
+    /// Read plaintext (through the TLS session for an HTTPS proxy). `Ok(0)` = EOF.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            UpstreamIo::Plain(s) => s.read(buf),
+            UpstreamIo::Tls(t) => {
+                t.pump()?;
+                match t.conn.reader().read(buf) {
+                    Ok(n) => Ok(n),
+                    // rustls signals "no plaintext yet" as WouldBlock and a peer
+                    // close as UnexpectedEof; map the latter to a clean EOF.
+                    Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(0),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
+    /// Write plaintext (encrypted into the TLS session for an HTTPS proxy). The
+    /// TLS writer buffers, so it accepts the whole slice; `pump` flushes records.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            UpstreamIo::Plain(s) => s.write(buf),
+            UpstreamIo::Tls(t) => {
+                // Flush queued records first; if the socket is still backed up,
+                // refuse new plaintext (WouldBlock) so the caller retains it in
+                // `to_upstream` instead of growing rustls's buffer without bound.
+                t.pump()?;
+                if t.conn.wants_write() {
+                    return Err(io::Error::from(io::ErrorKind::WouldBlock));
+                }
+                let n = t.conn.writer().write(buf)?;
+                t.pump()?;
+                Ok(n)
+            }
+        }
+    }
+
+    /// Half-close the write side (sends TLS close_notify for an HTTPS proxy).
+    fn shutdown_write(&mut self) -> io::Result<()> {
+        match self {
+            UpstreamIo::Plain(s) => s.shutdown(std::net::Shutdown::Write),
+            UpstreamIo::Tls(t) => {
+                t.conn.send_close_notify();
+                let _ = t.pump();
+                t.stream.shutdown(std::net::Shutdown::Write)
+            }
+        }
+    }
+
+    fn take_error(&mut self) -> io::Result<Option<io::Error>> {
+        self.source().take_error()
+    }
+}
+
+struct TcpUpstream {
+    io: UpstreamIo,
+    /// Proxy handshake in progress; `None` once the tunnel to `server` is open (or
+    /// when no proxy is configured). While `Some`, app data is left buffered in the
+    /// smoltcp socket and no relay/MITM runs.
+    handshake: Option<Handshake>,
+    /// Handshake bytes queued for the proxy but not yet flushed (socket backpressure).
+    hs_out: Vec<u8>,
     token: Token,
     connecting: bool,
     /// Raw bytes queued for the upstream socket. For a MITM'd flow these are the
@@ -141,6 +285,42 @@ struct UdpSession {
     last_used_ms: i64,
 }
 
+/// A SOCKS5 UDP ASSOCIATE session (P5, Stage 2): one per (app, server) pair, like
+/// [`UdpSession`]. A control TCP connection to the proxy runs the ASSOCIATE
+/// handshake and is then held open (the association lives only as long as it is);
+/// a separate `protect()`ed relay UDP socket carries the encapsulated datagrams to
+/// the proxy's relay endpoint. Fail-closed: any handshake/setup failure drops the
+/// session and its buffered datagrams rather than leaking around the proxy.
+struct Socks5UdpSession {
+    /// Control connection; kept open for the association's lifetime.
+    ctrl: TcpStream,
+    ctrl_token: Token,
+    /// True until the control socket's non-blocking connect completes.
+    ctrl_connecting: bool,
+    /// ASSOCIATE handshake; `Some` until it completes (then relaying begins).
+    handshake: Option<Handshake>,
+    /// Handshake bytes queued for the control socket (backpressure).
+    hs_out: Vec<u8>,
+    /// Relay socket, connected to the relay endpoint once the reply arrives.
+    relay: UdpSocket,
+    relay_token: Token,
+    /// The app source (reply destination).
+    app: SocketAddr,
+    /// The address replies appear to come from — what the app targeted (e.g. the
+    /// DNS placeholder), which may differ from the real encapsulation `target`.
+    reply_src: SocketAddr,
+    /// The real destination datagrams are encapsulated toward (e.g. the upstream
+    /// resolver for a DNS flow, or the origin server otherwise).
+    target: SocketAddr,
+    /// Datagrams buffered until the association is ready; capped.
+    pending: Vec<Vec<u8>>,
+    ready: bool,
+    last_used_ms: i64,
+}
+
+/// Cap on datagrams buffered while a SOCKS5 UDP association is still handshaking.
+const SOCKS_UDP_PENDING_CAP: usize = 8;
+
 /// Allowed-flow telemetry coalesced over one flush window while the live log is
 /// closed and no app is engaged (P3-4). Drained into a single [`Event::coarse`]
 /// per flush instead of one [`Event::flow`] per packet.
@@ -168,6 +348,8 @@ pub struct ForwarderStats {
     pub blocked: u64,
     pub mitm_new: u64,
     pub pinned: u64,
+    pub proxy_ok: u64,
+    pub proxy_fail: u64,
 }
 
 pub struct Forwarder {
@@ -175,6 +357,9 @@ pub struct Forwarder {
     registry: Registry,
     tcp: HashMap<FlowId, TcpUpstream>,
     udp: HashMap<UdpKey, UdpSession>,
+    /// SOCKS5 UDP ASSOCIATE sessions, used instead of `udp` when the proxy is
+    /// SOCKS5 (P5, Stage 2).
+    socks_udp: HashMap<UdpKey, Socks5UdpSession>,
     routes: HashMap<Token, Route>,
     next_token: usize,
     outbox: Vec<Vec<u8>>,
@@ -187,6 +372,10 @@ pub struct Forwarder {
     pcap: Option<PcapWriter<File>>,
     dns_upstream_v4: IpAddr,
     dns_upstream_v6: IpAddr,
+    /// Upstream proxy (P5): when `Some`, TCP flows are dialed through it (HTTP/
+    /// HTTPS CONNECT or SOCKS5) instead of the origin. `None` = direct (today's
+    /// behavior). A start-time setting, fixed for the session.
+    proxy: Option<Proxy>,
     /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
     tls: Option<MitmConfigs>,
     /// Decrypted HTTP transactions captured this session, drained on HAR export.
@@ -227,6 +416,7 @@ impl Forwarder {
             registry,
             tcp: HashMap::new(),
             udp: HashMap::new(),
+            socks_udp: HashMap::new(),
             routes: HashMap::new(),
             next_token: FIRST_DYNAMIC_TOKEN,
             outbox: Vec::new(),
@@ -239,6 +429,7 @@ impl Forwarder {
             pcap: None,
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
+            proxy: build_proxy(config),
             tls: build_tls_factory(config),
             har: Vec::new(),
             pinned: HashSet::new(),
@@ -256,7 +447,7 @@ impl Forwarder {
     }
 
     pub fn flow_counts(&self) -> (usize, usize) {
-        (self.tcp.len(), self.udp.len())
+        (self.tcp.len(), self.udp.len() + self.socks_udp.len())
     }
 
     /// Start a pcapng capture writing to `fd` (owned henceforth). `ring_bytes` of
@@ -570,6 +761,17 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return; // firewall drop (covers this app's DNS too)
                 }
+                // Upstream proxy (P5): a SOCKS5 proxy carries all UDP via UDP
+                // ASSOCIATE (Stage 2); an HTTP/HTTPS proxy can't carry UDP at all,
+                // so its non-DNS UDP is dropped fail-closed rather than leaking
+                // around the proxy (QUIC then falls back to proxied TCP). DNS to an
+                // HTTP/HTTPS proxy still resolves directly so name resolution works.
+                let proxy_udp = self.proxy.as_ref().map(|p| p.supports_udp());
+                let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
+                if proxy_udp == Some(false) && !is_dns {
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return;
+                }
                 // QUIC suppression (P4-5): when cosmetics are on, drop UDP :443 for
                 // inspected apps so they fall back to TCP+TLS — the no-ALPN H1
                 // downgrade the rewriter needs to see HTML. Without this, HTTP/3
@@ -581,7 +783,6 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
-                let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if let Some(dgram) = udp::parse(packet) {
                     // For DNS, learn the query name up front (and sinkhole blocked
                     // names) so the allowed flow event can carry the decoded domain.
@@ -607,7 +808,13 @@ impl Forwarder {
                     } else {
                         dgram.dst
                     };
-                    self.forward_udp(dgram, upstream, env, bridge);
+                    // A SOCKS5 proxy relays UDP via ASSOCIATE; otherwise (no proxy,
+                    // or DNS to an HTTP/HTTPS proxy) the datagram goes direct.
+                    if proxy_udp == Some(true) {
+                        self.forward_udp_socks(dgram, upstream, env, bridge);
+                    } else {
+                        self.forward_udp(dgram, upstream, env, bridge);
+                    }
                 } else if self.coarse_mode(verdict.uid) {
                     self.coarse_add(decoded.length, L4::Udp, is_dns);
                 } else {
@@ -665,6 +872,17 @@ impl Forwarder {
 
         // App -> upstream for each active flow.
         for id in self.stack.active_flows() {
+            // Defer all relay until the upstream tunnel is open: while dialing or
+            // running the proxy handshake, leave app data in the smoltcp socket
+            // (its window backpressures the app) rather than draining it.
+            match self.tcp.get(&id).map(|up| (up.connecting, up.handshake.is_some())) {
+                Some((true, _)) => continue,
+                Some((false, true)) => {
+                    self.drive_proxy_handshake(id, batcher);
+                    continue;
+                }
+                _ => {}
+            }
             let data = self.stack.tcp_take_app_data(id);
             let pending = matches!(
                 self.tcp.get(&id).map(|up| &up.classify),
@@ -712,7 +930,7 @@ impl Forwarder {
             if self.stack.tcp_app_finished(id) {
                 if let Some(up) = self.tcp.get_mut(&id) {
                     if up.to_upstream.is_empty() && !up.write_closed && !up.connecting {
-                        let _ = up.stream.shutdown(std::net::Shutdown::Write);
+                        let _ = up.io.shutdown_write();
                         up.write_closed = true;
                     }
                 }
@@ -720,6 +938,7 @@ impl Forwarder {
         }
 
         self.reap_udp(now);
+        self.reap_socks(now);
         self.drain_stack_outbound();
     }
 
@@ -736,21 +955,29 @@ impl Forwarder {
                 if event.is_writable() {
                     let was_connecting = self.tcp.get(&id).map_or(false, |up| up.connecting);
                     if was_connecting {
-                        if let Some(up) = self.tcp.get_mut(&id) {
-                            up.connecting = false;
-                        }
                         // A non-blocking connect that failed still reports
                         // writable, with the error latched on the socket.
                         let err = self
                             .tcp
-                            .get(&id)
-                            .and_then(|up| up.stream.take_error().ok().flatten());
+                            .get_mut(&id)
+                            .and_then(|up| up.io.take_error().ok().flatten());
+                        if let Some(up) = self.tcp.get_mut(&id) {
+                            up.connecting = false;
+                        }
                         if err.is_some() {
                             self.stats.connect_fail += 1;
                             self.stack.tcp_abort(id);
                             return;
                         }
                     }
+                }
+                // While the proxy handshake runs, drive it and defer all relay: no
+                // app data flows upstream until the tunnel to `server` is open.
+                if self.tcp.get(&id).map_or(false, |up| up.handshake.is_some()) {
+                    self.drive_proxy_handshake(id, batcher);
+                    return;
+                }
+                if event.is_writable() {
                     self.flush_to_upstream(id);
                 }
                 let is_mitm = self.tcp.get(&id).map_or(false, |up| up.mitm.is_some());
@@ -778,6 +1005,21 @@ impl Forwarder {
                 let key = *key;
                 self.pump_udp_reply(key, batcher);
             }
+            Some(Route::SocksCtrl(key)) => {
+                let key = *key;
+                if self.socks_udp.get(&key).map_or(false, |s| s.handshake.is_some()) {
+                    self.drive_socks_ctrl(key);
+                } else if event.is_read_closed() || event.is_write_closed() {
+                    // The control connection dropped ⇒ the association is dead.
+                    self.teardown_socks(key);
+                }
+            }
+            Some(Route::SocksRelay(key)) => {
+                let key = *key;
+                if event.is_readable() {
+                    self.pump_socks_relay(key);
+                }
+            }
             None => {}
         }
     }
@@ -798,13 +1040,18 @@ impl Forwarder {
         }
         let classify = if defer { Classify::PendingSni(Vec::new()) } else { Classify::Settled };
         match self.connect_tcp(server, env, bridge) {
-            Some((stream, token)) => {
+            Some((io, token)) => {
                 self.stats.tcp_new += 1;
+                // With a proxy, dial through it: attach a handshake targeting the
+                // real `server`, run before any relay/MITM begins.
+                let handshake = self.proxy.as_ref().map(|p| Handshake::connect(p, server));
                 self.routes.insert(token, Route::Tcp(id));
                 self.tcp.insert(
                     id,
                     TcpUpstream {
-                        stream,
+                        io,
+                        handshake,
+                        hs_out: Vec::new(),
                         token,
                         connecting: true,
                         to_upstream: Vec::new(),
@@ -983,37 +1230,186 @@ impl Forwarder {
         self.drive_mitm(id, batcher);
     }
 
-    fn connect_tcp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(TcpStream, Token)> {
-        let domain = if server.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    fn connect_tcp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(UpstreamIo, Token)> {
+        // Dial the proxy when configured, else the origin directly. The relay/MITM
+        // above targets `server` regardless; the handshake (set in `open_tcp`)
+        // bridges the proxy connection to it.
+        let dial = self.proxy.as_ref().map_or(server, |p| p.addr);
+        let domain = if dial.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
         let socket = Socket::new(domain, Type::STREAM, None).ok()?;
         socket.set_nonblocking(true).ok()?;
         if bridge.protect(env, socket.as_raw_fd()) {
             self.stats.protect_ok += 1;
         } else {
             self.stats.protect_fail += 1;
-            crate::alog!("protect() failed for upstream TCP socket -> {}", server);
+            crate::alog!("protect() failed for upstream TCP socket -> {}", dial);
             return None;
         }
         // Non-blocking connect returns EINPROGRESS; that's expected.
-        let _ = socket.connect(&server.into());
+        let _ = socket.connect(&dial.into());
         let std_stream: std::net::TcpStream = socket.into();
-        let mut stream = TcpStream::from_std(std_stream);
+        let stream = TcpStream::from_std(std_stream);
+        // Wrap in TLS for an HTTPS proxy; otherwise a bare socket carries the
+        // plaintext CONNECT / SOCKS handshake and the relayed bytes.
+        let mut io = match self.proxy.as_ref().filter(|p| p.is_tls()) {
+            Some(p) => match ProxyTls::new(stream, &p.server_name) {
+                Some(t) => UpstreamIo::Tls(Box::new(t)),
+                None => {
+                    crate::alog!("HTTPS proxy TLS setup failed for {}", p.server_name);
+                    return None;
+                }
+            },
+            None => UpstreamIo::Plain(stream),
+        };
         let token = self.alloc_token();
         self.registry
-            .register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)
+            .register(io.source(), token, Interest::READABLE | Interest::WRITABLE)
             .ok()?;
-        Some((stream, token))
+        Some((io, token))
+    }
+
+    // --- Proxy handshake ------------------------------------------------
+
+    /// Advance a flow's proxy handshake. For an HTTPS proxy the rustls session is
+    /// completed first; then the HTTP `CONNECT` / SOCKS5 step machine runs until
+    /// the tunnel to `server` opens (`handshake` cleared → relay resumes next
+    /// pass) or any error tears the flow down (fail-closed).
+    fn drive_proxy_handshake(&mut self, id: FlowId, batcher: &mut Batcher) {
+        // 1. Finish the TLS handshake to an HTTPS proxy.
+        if self.tcp.get(&id).map_or(false, |up| up.io.tls_handshaking()) {
+            let pumped = self.tcp.get_mut(&id).map(|up| up.io.pump_tls());
+            if !matches!(pumped, Some(Ok(()))) {
+                return self.fail_proxy(id, batcher);
+            }
+            if self.tcp.get(&id).map_or(false, |up| up.io.tls_handshaking()) {
+                return; // still handshaking; resume on next readiness
+            }
+        }
+        // 2. Flush any handshake bytes left over from a backed-up socket.
+        if !self.flush_handshake_out(id) {
+            return self.fail_proxy(id, batcher);
+        }
+        if self.tcp.get(&id).map_or(true, |up| !up.hs_out.is_empty()) {
+            return; // socket still full (or flow gone); wait for writable
+        }
+        // 3. Drain whatever the proxy has sent so far.
+        let mut input = Vec::new();
+        let mut eof = false;
+        let mut buf = [0u8; 4096];
+        loop {
+            let Some(up) = self.tcp.get_mut(&id) else { return };
+            match up.io.read(&mut buf) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(n) => input.extend_from_slice(&buf[..n]),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => return self.fail_proxy(id, batcher),
+            }
+        }
+        // 4. Step the protocol machine, sending each produced message.
+        let mut first = true;
+        loop {
+            let step = {
+                let Some(up) = self.tcp.get_mut(&id) else { return };
+                let Some(hs) = up.handshake.as_mut() else { return };
+                let feed: &[u8] = if first { &input } else { &[] };
+                hs.step(feed)
+            };
+            first = false;
+            match step {
+                Ok(ProxyStep::Write(bytes)) => {
+                    if let Some(up) = self.tcp.get_mut(&id) {
+                        up.hs_out.extend_from_slice(&bytes);
+                    }
+                    if !self.flush_handshake_out(id) {
+                        return self.fail_proxy(id, batcher);
+                    }
+                    // Not fully flushed → wait for writable before stepping on.
+                    if self.tcp.get(&id).map_or(true, |up| !up.hs_out.is_empty()) {
+                        return;
+                    }
+                }
+                Ok(ProxyStep::Read) => {
+                    // The proxy closed before completing the handshake ⇒ fail closed.
+                    if eof {
+                        return self.fail_proxy(id, batcher);
+                    }
+                    return;
+                }
+                Ok(ProxyStep::Done { leftover }) => {
+                    self.stats.proxy_ok += 1;
+                    if let Some(up) = self.tcp.get_mut(&id) {
+                        up.handshake = None;
+                        // Bytes past the reply belong to the origin stream. On a
+                        // MITM'd flow they're the server's TLS records (feed the
+                        // splice); otherwise raw app-bound bytes. Normally empty —
+                        // for CONNECT/SOCKS the origin doesn't speak until we send.
+                        if !leftover.is_empty() {
+                            match up.mitm.as_mut() {
+                                Some(mitm) => mitm.recv_from_upstream(&leftover),
+                                None => up.to_app.extend_from_slice(&leftover),
+                            }
+                        }
+                    }
+                    self.flush_to_app(id);
+                    return; // relay/MITM resumes on the next service pass
+                }
+                Err(e) => {
+                    crate::alog!("proxy handshake failed: {e}");
+                    return self.fail_proxy(id, batcher);
+                }
+            }
+        }
+    }
+
+    /// Write as much of the pending handshake output as the socket accepts,
+    /// retaining any unsent tail in `hs_out`. Returns false on a hard write error.
+    fn flush_handshake_out(&mut self, id: FlowId) -> bool {
+        let Some(up) = self.tcp.get_mut(&id) else { return false };
+        if up.hs_out.is_empty() {
+            return true;
+        }
+        let data = std::mem::take(&mut up.hs_out);
+        let mut written = 0;
+        let mut ok = true;
+        while written < data.len() {
+            match up.io.write(&data[written..]) {
+                Ok(0) => break,
+                Ok(n) => written += n,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        up.hs_out = data[written..].to_vec();
+        ok
+    }
+
+    /// Fail-closed teardown of a flow whose proxy handshake failed: reset the app
+    /// (so it errors fast instead of leaking around the proxy) and drop the flow.
+    fn fail_proxy(&mut self, id: FlowId, batcher: &mut Batcher) {
+        self.stats.proxy_fail += 1;
+        if let Some(up) = self.tcp.get(&id) {
+            batcher.push(Event::blocked_flow(up.server).with_uid(up.uid));
+        }
+        self.stack.tcp_abort(id);
+        self.teardown_tcp(id);
     }
 
     fn flush_to_upstream(&mut self, id: FlowId) {
         let Some(up) = self.tcp.get_mut(&id) else { return };
-        if up.connecting || up.to_upstream.is_empty() {
+        // Never relay app bytes while still connecting or mid proxy handshake.
+        if up.connecting || up.handshake.is_some() || up.to_upstream.is_empty() {
             return;
         }
         let mut written = 0;
         let mut failed = false;
         while written < up.to_upstream.len() {
-            match up.stream.write(&up.to_upstream[written..]) {
+            match up.io.write(&up.to_upstream[written..]) {
                 Ok(0) => break,
                 Ok(n) => written += n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -1081,7 +1477,7 @@ impl Forwarder {
             self.stack.tcp_close_app(id);
             if let Some(up) = self.tcp.get_mut(&id) {
                 if !up.write_closed && !up.connecting {
-                    let _ = up.stream.shutdown(std::net::Shutdown::Write);
+                    let _ = up.io.shutdown_write();
                     up.write_closed = true;
                 }
             }
@@ -1157,7 +1553,7 @@ impl Forwarder {
                 break;
             }
             let Some(up) = self.tcp.get_mut(&id) else { break };
-            match up.stream.read(&mut buf) {
+            match up.io.read(&mut buf) {
                 Ok(0) => break, // upstream EOF; the read-closed path closes the app side
                 Ok(n) => {
                     self.stats.upstream_reply += 1;
@@ -1179,7 +1575,7 @@ impl Forwarder {
             }
             let Some(up) = self.tcp.get_mut(&id) else { break };
             let mut buf = vec![0u8; space.min(32 * 1024)];
-            match up.stream.read(&mut buf) {
+            match up.io.read(&mut buf) {
                 Ok(0) => {
                     // Upstream EOF -> half-close toward the app.
                     self.stack.tcp_close_app(id);
@@ -1208,7 +1604,7 @@ impl Forwarder {
         }
         self.drain_mitm_transactions(id);
         if let Some(mut up) = self.tcp.remove(&id) {
-            let _ = self.registry.deregister(&mut up.stream);
+            let _ = self.registry.deregister(up.io.source());
             self.routes.remove(&up.token);
         }
     }
@@ -1311,6 +1707,231 @@ impl Forwarder {
             }
         }
     }
+
+    // --- SOCKS5 UDP ASSOCIATE (Stage 2) ----------------------------------
+
+    /// Forward a datagram through a SOCKS5 UDP association, creating one for this
+    /// (app, server) pair on first use. `target` is the real encapsulation
+    /// destination (the upstream resolver for DNS, else the origin server).
+    fn forward_udp_socks(
+        &mut self,
+        dgram: udp::UdpDatagram,
+        target: SocketAddr,
+        env: &mut jni::JNIEnv,
+        bridge: &Bridge,
+    ) {
+        let key = UdpKey { app: dgram.src, server: dgram.dst };
+        let now = self.now_ms();
+        if let Some(session) = self.socks_udp.get_mut(&key) {
+            session.last_used_ms = now;
+            if session.ready {
+                let wire = proxy::socks5_udp_encapsulate(session.target, &dgram.payload);
+                let _ = session.relay.send(&wire);
+            } else if session.pending.len() < SOCKS_UDP_PENDING_CAP {
+                session.pending.push(dgram.payload);
+            }
+            return;
+        }
+        let Some(proxy) = self.proxy.clone() else { return };
+        let Some((ctrl, ctrl_token)) = self.connect_socks_ctrl(env, bridge) else {
+            self.stats.connect_fail += 1;
+            return;
+        };
+        let Some((relay, relay_token)) = self.new_relay_socket(env, bridge) else {
+            // Undo the control socket registered just above (its route isn't set yet).
+            let mut ctrl = ctrl;
+            let _ = self.registry.deregister(&mut ctrl);
+            self.stats.connect_fail += 1;
+            return;
+        };
+        self.stats.udp_new += 1;
+        self.routes.insert(ctrl_token, Route::SocksCtrl(key));
+        self.routes.insert(relay_token, Route::SocksRelay(key));
+        self.socks_udp.insert(
+            key,
+            Socks5UdpSession {
+                ctrl,
+                ctrl_token,
+                ctrl_connecting: true,
+                handshake: Some(Handshake::udp_associate(&proxy)),
+                hs_out: Vec::new(),
+                relay,
+                relay_token,
+                app: dgram.src,
+                reply_src: dgram.dst,
+                target,
+                pending: vec![dgram.payload],
+                ready: false,
+                last_used_ms: now,
+            },
+        );
+    }
+
+    /// Dial the proxy for a UDP-associate control connection (plaintext — SOCKS5 is
+    /// never TLS-wrapped). Registered for read/write to detect connect + close.
+    fn connect_socks_ctrl(&mut self, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(TcpStream, Token)> {
+        let dial = self.proxy.as_ref()?.addr;
+        let domain = if dial.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        let socket = Socket::new(domain, Type::STREAM, None).ok()?;
+        socket.set_nonblocking(true).ok()?;
+        if bridge.protect(env, socket.as_raw_fd()) {
+            self.stats.protect_ok += 1;
+        } else {
+            self.stats.protect_fail += 1;
+            crate::alog!("protect() failed for SOCKS5 UDP control socket -> {}", dial);
+            return None;
+        }
+        let _ = socket.connect(&dial.into());
+        let std_stream: std::net::TcpStream = socket.into();
+        let mut stream = TcpStream::from_std(std_stream);
+        let token = self.alloc_token();
+        self.registry
+            .register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)
+            .ok()?;
+        Some((stream, token))
+    }
+
+    /// Create the `protect()`ed relay UDP socket. Its address family matches the
+    /// proxy host (where the relay lives); a v6 target still rides it via the
+    /// per-datagram SOCKS address header. Connected to the relay endpoint later.
+    fn new_relay_socket(&mut self, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(UdpSocket, Token)> {
+        let proxy_addr = self.proxy.as_ref()?.addr;
+        let domain = if proxy_addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        let socket = Socket::new(domain, Type::DGRAM, None).ok()?;
+        socket.set_nonblocking(true).ok()?;
+        if bridge.protect(env, socket.as_raw_fd()) {
+            self.stats.protect_ok += 1;
+        } else {
+            self.stats.protect_fail += 1;
+            crate::alog!("protect() failed for SOCKS5 UDP relay socket");
+            return None;
+        }
+        let std_udp: std::net::UdpSocket = socket.into();
+        let mut mio_udp = UdpSocket::from_std(std_udp);
+        let token = self.alloc_token();
+        self.registry.register(&mut mio_udp, token, Interest::READABLE).ok()?;
+        Some((mio_udp, token))
+    }
+
+    /// Advance a UDP association's control handshake; on completion, connect the
+    /// relay socket and flush buffered datagrams. Any failure tears it down.
+    fn drive_socks_ctrl(&mut self, key: UdpKey) {
+        // Clear the connect flag on the first writable, checking for a connect error.
+        let connecting = self.socks_udp.get(&key).map_or(false, |s| s.ctrl_connecting);
+        if connecting {
+            let err = self
+                .socks_udp
+                .get_mut(&key)
+                .and_then(|s| s.ctrl.take_error().ok().flatten());
+            if let Some(s) = self.socks_udp.get_mut(&key) {
+                s.ctrl_connecting = false;
+            }
+            if err.is_some() {
+                self.teardown_socks(key);
+                return;
+            }
+        }
+        let progress = if let Some(s) = self.socks_udp.get_mut(&key) {
+            match s.handshake.as_mut() {
+                Some(hs) => pump_ctrl_handshake(&mut s.ctrl, hs, &mut s.hs_out),
+                None => return,
+            }
+        } else {
+            return;
+        };
+        match progress {
+            CtrlStep::Pending => {}
+            CtrlStep::Failed => self.teardown_socks(key),
+            CtrlStep::Ready(bound) => self.socks_associate_ready(key, bound),
+        }
+    }
+
+    /// The ASSOCIATE reply arrived: resolve the relay endpoint, connect the relay
+    /// socket to it, and flush datagrams buffered during the handshake.
+    fn socks_associate_ready(&mut self, key: UdpKey, bound: Option<SocketAddr>) {
+        let Some(proxy_ip) = self.proxy.as_ref().map(|p| p.addr.ip()) else {
+            self.teardown_socks(key);
+            return;
+        };
+        // An all-zero bound address means "the proxy host" (RFC 1928).
+        let relay_addr = match bound {
+            Some(a) if a.ip().is_unspecified() => SocketAddr::new(proxy_ip, a.port()),
+            Some(a) => a,
+            None => {
+                crate::alog!("SOCKS5 UDP associate: no usable relay address");
+                self.teardown_socks(key);
+                return;
+            }
+        };
+        let ok = if let Some(s) = self.socks_udp.get_mut(&key) {
+            if s.relay.connect(relay_addr).is_ok() {
+                s.handshake = None;
+                s.ready = true;
+                let target = s.target;
+                for payload in std::mem::take(&mut s.pending) {
+                    let wire = proxy::socks5_udp_encapsulate(target, &payload);
+                    let _ = s.relay.send(&wire);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            return;
+        };
+        if ok {
+            self.stats.proxy_ok += 1;
+        } else {
+            self.teardown_socks(key);
+        }
+    }
+
+    /// Drain relayed datagrams: decapsulate the SOCKS UDP header and inject each
+    /// toward the app, sourced from what it originally targeted (`reply_src`).
+    fn pump_socks_relay(&mut self, key: UdpKey) {
+        let (reply_src, app) = match self.socks_udp.get(&key) {
+            Some(s) => (s.reply_src, s.app),
+            None => return,
+        };
+        let mut buf = vec![0u8; MAX_DATAGRAM];
+        loop {
+            let Some(s) = self.socks_udp.get_mut(&key) else { break };
+            match s.relay.recv(&mut buf) {
+                Ok(n) => {
+                    s.last_used_ms = self.start.elapsed().as_millis() as i64;
+                    self.stats.upstream_reply += 1;
+                    if let Some((_origin, payload)) = proxy::socks5_udp_decapsulate(&buf[..n]) {
+                        if let Some(packet) = udp::build_reply(reply_src, app, payload) {
+                            self.outbox.push(packet);
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn teardown_socks(&mut self, key: UdpKey) {
+        if let Some(mut s) = self.socks_udp.remove(&key) {
+            let _ = self.registry.deregister(&mut s.ctrl);
+            let _ = self.registry.deregister(&mut s.relay);
+            self.routes.remove(&s.ctrl_token);
+            self.routes.remove(&s.relay_token);
+        }
+    }
+
+    fn reap_socks(&mut self, now: i64) {
+        let stale: Vec<UdpKey> = self
+            .socks_udp
+            .iter()
+            .filter(|(_, s)| now - s.last_used_ms > UDP_IDLE_MS)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in stale {
+            self.teardown_socks(key);
+        }
+    }
 }
 
 /// Build the shared rustls configs for TLS interception, or `None` when it's
@@ -1334,6 +1955,136 @@ fn build_tls_factory(config: &Config) -> Option<MitmConfigs> {
             None
         }
     }
+}
+
+/// Outcome of pumping a plaintext SOCKS control handshake ([`pump_ctrl_handshake`]).
+enum CtrlStep {
+    /// Still in progress; resume on the next readiness event.
+    Pending,
+    /// Complete; carries the relay bound address from the ASSOCIATE reply.
+    Ready(Option<SocketAddr>),
+    /// Failed; the caller tears the session down (fail-closed).
+    Failed,
+}
+
+/// Drive a SOCKS handshake over a plaintext control socket (SOCKS5 is never TLS-
+/// wrapped). Mirrors [`Forwarder::drive_proxy_handshake`] but for the UDP-associate
+/// control connection: on completion it yields the relay bound address.
+fn pump_ctrl_handshake(stream: &mut TcpStream, hs: &mut Handshake, hs_out: &mut Vec<u8>) -> CtrlStep {
+    if !flush_plain(stream, hs_out) {
+        return CtrlStep::Failed;
+    }
+    if !hs_out.is_empty() {
+        return CtrlStep::Pending; // socket backed up; retry on writable
+    }
+    let mut input = Vec::new();
+    let mut eof = false;
+    let mut buf = [0u8; 2048];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                eof = true;
+                break;
+            }
+            Ok(n) => input.extend_from_slice(&buf[..n]),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => return CtrlStep::Failed,
+        }
+    }
+    let mut first = true;
+    loop {
+        let step = {
+            let feed: &[u8] = if first { &input } else { &[] };
+            hs.step(feed)
+        };
+        first = false;
+        match step {
+            Ok(ProxyStep::Write(bytes)) => {
+                hs_out.extend_from_slice(&bytes);
+                if !flush_plain(stream, hs_out) {
+                    return CtrlStep::Failed;
+                }
+                if !hs_out.is_empty() {
+                    return CtrlStep::Pending;
+                }
+            }
+            Ok(ProxyStep::Read) => {
+                return if eof { CtrlStep::Failed } else { CtrlStep::Pending };
+            }
+            // The control channel carries no post-associate data, so `leftover`
+            // (if any) is discarded.
+            Ok(ProxyStep::Done { .. }) => return CtrlStep::Ready(hs.bound_addr()),
+            Err(e) => {
+                crate::alog!("SOCKS5 UDP associate handshake failed: {e}");
+                return CtrlStep::Failed;
+            }
+        }
+    }
+}
+
+/// Write as much of `out` as a plaintext socket accepts, retaining the unsent tail
+/// in `out`. Returns false on a hard write error.
+fn flush_plain(stream: &mut TcpStream, out: &mut Vec<u8>) -> bool {
+    if out.is_empty() {
+        return true;
+    }
+    let data = std::mem::take(out);
+    let mut written = 0;
+    let mut ok = true;
+    while written < data.len() {
+        match stream.write(&data[written..]) {
+            Ok(0) => break,
+            Ok(n) => written += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => {
+                ok = false;
+                break;
+            }
+        }
+    }
+    *out = data[written..].to_vec();
+    ok
+}
+
+/// Validate the proxy config into a dialable [`Proxy`], or `None` when disabled
+/// (direct). A *misconfigured* proxy (enabled but no resolvable address) also
+/// yields `None` — logged, and the session dials direct — so a typo can't brick
+/// connectivity; a *reachable* proxy that then fails a flow is handled fail-closed.
+///
+/// The host may be a name: it's resolved here, on the datapath *startup* thread
+/// (before the poll loop), which is safe because our process bypasses the tunnel
+/// so `getaddrinfo` egresses normally. Resolution happens once per session.
+fn build_proxy(config: &Config) -> Option<Proxy> {
+    use std::net::ToSocketAddrs;
+    let pc = &config.proxy;
+    if pc.kind == crate::proxy::ProxyKind::None {
+        return None;
+    }
+    // Fast path: the address is already a literal IP (in `ip` or `host`).
+    if let Some(proxy) = Proxy::from_config(pc) {
+        crate::alog!("upstream proxy enabled: {:?} {}", proxy.kind, proxy.addr);
+        return Some(proxy);
+    }
+    // Otherwise resolve the hostname.
+    let host = pc.host.trim();
+    if pc.port != 0 && !host.is_empty() {
+        if let Ok(mut addrs) = (host, pc.port).to_socket_addrs() {
+            if let Some(addr) = addrs.next() {
+                let clean = |s: &Option<String>| s.as_ref().filter(|v| !v.is_empty()).cloned();
+                let proxy = Proxy {
+                    kind: pc.kind,
+                    addr,
+                    server_name: host.to_string(),
+                    username: clean(&pc.username),
+                    password: clean(&pc.password),
+                };
+                crate::alog!("upstream proxy enabled: {:?} {} (resolved {})", proxy.kind, addr, host);
+                return Some(proxy);
+            }
+        }
+    }
+    crate::alog!("proxy configured but address unresolved/invalid; dialing direct");
+    None
 }
 
 /// Pick the first IPv4 and IPv6 upstream resolvers from the config, falling back

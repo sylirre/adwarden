@@ -145,6 +145,16 @@
     <string name="settings_run_scriptlets_sub">Advanced: injects JavaScript into pages to defuse anti-adblock and ad scripts. Downloads a scriptlet pack.</string>
     <string name="settings_cosmetic_requires">Requires inspection</string>
     <string name="settings_cosmetic_requires_body">Cosmetic filtering only works on apps you\'ve enabled HTTPS inspection for (with the Adwarden CA installed) — Chrome and Firefox. It never touches other apps.</string>
+    <string name="settings_proxy">Proxy</string>
+    <string name="settings_proxy_type">Forward traffic through a proxy</string>
+    <string name="settings_proxy_off">Off</string>
+    <string name="settings_proxy_host">Host</string>
+    <string name="settings_proxy_port">Port</string>
+    <string name="settings_proxy_username">Username (optional)</string>
+    <string name="settings_proxy_password">Password (optional)</string>
+    <string name="settings_proxy_apply">Apply &amp; reconnect</string>
+    <string name="settings_proxy_note">How forwarding works</string>
+    <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. A SOCKS5 proxy also carries DNS and other UDP (e.g. QUIC) through the proxy. An HTTP/HTTPS proxy can\'t carry UDP, so DNS resolves directly and UDP apps fall back to TCP. Changing these settings reconnects the VPN.</string>
     <string name="settings_system_integration">System integration</string>
     <string name="settings_always_on">Always-on VPN</string>
     <string name="settings_always_on_sub">Open Android\'s VPN settings to keep Adwarden always connected, and optionally block traffic while it\'s off (lockdown).</string>

@@ -8,6 +8,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.SharedPreferencesMigration
@@ -19,6 +20,16 @@ import javax.inject.Singleton
 
 /** How the app resolves light/dark, independent of the Material You palette. */
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+/**
+ * Upstream proxy protocol (P5). Serialized to the native config JSON as the
+ * lowercase [name] (`none`/`http`/`https`/`socks5`), matching the Rust `ProxyKind`.
+ *  - NONE: dial origins directly (default).
+ *  - HTTP: HTTP `CONNECT` over a plaintext link to the proxy.
+ *  - HTTPS: HTTP `CONNECT` tunneled inside TLS to the proxy.
+ *  - SOCKS5: SOCKS5 with optional username/password auth.
+ */
+enum class ProxyKind { NONE, HTTP, HTTPS, SOCKS5 }
 
 /**
  * How the datapath treats encrypted DNS (DoT/DoH).
@@ -49,6 +60,13 @@ data class AppSettings(
      *  per-flow telemetry. Off by default; a pure display/telemetry preference that
      *  never affects filtering (it only gates the [LiveLogState] demand signal). */
     val liveTrafficMonitoring: Boolean = false,
+    /** Upstream proxy (P5). A start-time setting: changing any field re-establishes
+     *  the tunnel. [proxyHost] may be a hostname or IP (resolved at start). */
+    val proxyKind: ProxyKind = ProxyKind.NONE,
+    val proxyHost: String = "",
+    val proxyPort: Int = 0,
+    val proxyUsername: String = "",
+    val proxyPassword: String = "",
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -81,6 +99,13 @@ class SettingsRepository @Inject constructor(
             cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
             cosmeticScriptlets = prefs[KEY_COSMETIC_SCRIPTLETS] ?: false,
             liveTrafficMonitoring = prefs[KEY_LIVE_TRAFFIC] ?: false,
+            proxyKind = prefs[KEY_PROXY_KIND]
+                ?.let { runCatching { ProxyKind.valueOf(it) }.getOrNull() }
+                ?: ProxyKind.NONE,
+            proxyHost = prefs[KEY_PROXY_HOST] ?: "",
+            proxyPort = prefs[KEY_PROXY_PORT] ?: 0,
+            proxyUsername = prefs[KEY_PROXY_USERNAME] ?: "",
+            proxyPassword = prefs[KEY_PROXY_PASSWORD] ?: "",
         )
     }
 
@@ -108,6 +133,17 @@ class SettingsRepository @Inject constructor(
     suspend fun setLiveTrafficMonitoring(value: Boolean) =
         store.edit { it[KEY_LIVE_TRAFFIC] = value }
 
+    /** Persist the whole proxy config in one edit, so a change fans out as a single
+     *  settings emission (one tunnel re-establish, not one per field). */
+    suspend fun setProxy(kind: ProxyKind, host: String, port: Int, username: String, password: String) =
+        store.edit {
+            it[KEY_PROXY_KIND] = kind.name
+            it[KEY_PROXY_HOST] = host.trim()
+            it[KEY_PROXY_PORT] = port
+            it[KEY_PROXY_USERNAME] = username
+            it[KEY_PROXY_PASSWORD] = password
+        }
+
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -120,5 +156,10 @@ class SettingsRepository @Inject constructor(
         val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")
         val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")
         val KEY_LIVE_TRAFFIC = booleanPreferencesKey("live_traffic_monitoring")
+        val KEY_PROXY_KIND = stringPreferencesKey("proxy_kind")
+        val KEY_PROXY_HOST = stringPreferencesKey("proxy_host")
+        val KEY_PROXY_PORT = intPreferencesKey("proxy_port")
+        val KEY_PROXY_USERNAME = stringPreferencesKey("proxy_username")
+        val KEY_PROXY_PASSWORD = stringPreferencesKey("proxy_password")
     }
 }
