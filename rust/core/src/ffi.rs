@@ -163,6 +163,7 @@ pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpd
                 element_hiding: parsed.cosmetic_element_hiding,
                 scriptlets: parsed.cosmetic_scriptlets,
             });
+            session.send(Command::SetProxyDns(parsed.proxy_dns_over_tcp));
         }
     }));
 }

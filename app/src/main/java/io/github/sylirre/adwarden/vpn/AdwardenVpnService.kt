@@ -356,17 +356,18 @@ class AdwardenVpnService : VpnService() {
         // to the core on change, coalesced into a single update.
         scope.launch {
             settings.settings
-                .map { Triple(it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets) }
+                .map { LiveConfig(it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets, it.proxyDnsOverTcp) }
                 .distinctUntilChanged()
-                .collect { (mode, hiding, scriptlets) ->
+                .collect { c ->
                     val handle = nativeHandle
                     if (handle != 0L) {
                         NativeCore.nativeUpdateConfig(
                             handle,
                             JSONObject()
-                                .put("encrypted_dns_mode", mode.name.lowercase())
-                                .put("cosmetic_element_hiding", hiding)
-                                .put("cosmetic_scriptlets", scriptlets)
+                                .put("encrypted_dns_mode", c.encryptedDnsMode.name.lowercase())
+                                .put("cosmetic_element_hiding", c.hiding)
+                                .put("cosmetic_scriptlets", c.scriptlets)
+                                .put("proxy_dns_over_tcp", c.proxyDnsOverTcp)
                                 .toString(),
                         )
                     }
@@ -534,6 +535,7 @@ class AdwardenVpnService : VpnService() {
             val proxyPort: Int,
             val proxyUser: String,
             val proxyPass: String,
+            val proxyDnsOverTcp: Boolean,
         )
         val cfg = runBlocking {
             val s = settings.settings.first()
@@ -548,6 +550,7 @@ class AdwardenVpnService : VpnService() {
                 s.proxyPort,
                 s.proxyUsername,
                 s.proxyPassword,
+                s.proxyDnsOverTcp,
             )
         }
         if (cfg.requested && cfg.material == null) {
@@ -559,6 +562,7 @@ class AdwardenVpnService : VpnService() {
             put("dns_servers", JSONArray(UPSTREAM_DNS))
             put("cosmetic_element_hiding", cfg.hiding)
             put("cosmetic_scriptlets", cfg.scriptlets)
+            put("proxy_dns_over_tcp", cfg.proxyDnsOverTcp)
             cfg.material?.let {
                 put("intercept_tls", true)
                 put("ca_cert_pem", it.certPem)
@@ -639,6 +643,14 @@ class AdwardenVpnService : VpnService() {
         stopEverything()
         super.onDestroy()
     }
+
+    /** The subset of settings pushed live to the core via nativeUpdateConfig. */
+    private data class LiveConfig(
+        val encryptedDnsMode: EncryptedDnsMode,
+        val hiding: Boolean,
+        val scriptlets: Boolean,
+        val proxyDnsOverTcp: Boolean,
+    )
 
     companion object {
         const val ACTION_START = "io.github.sylirre.adwarden.vpn.action.START"

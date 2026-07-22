@@ -79,6 +79,9 @@ enum Route {
     SocksCtrl(UdpKey),
     /// SOCKS5 UDP ASSOCIATE relay socket (carries the encapsulated datagrams).
     SocksRelay(UdpKey),
+    /// A one-shot DNS-over-TCP query through an HTTP/HTTPS proxy (P5). Keyed in
+    /// `dns_tcp` by the socket's own token, which is the readiness token here.
+    DnsTcp,
 }
 
 /// Whether a flow's interception has been decided, or is waiting on the SNI.
@@ -321,6 +324,39 @@ struct Socks5UdpSession {
 /// Cap on datagrams buffered while a SOCKS5 UDP association is still handshaking.
 const SOCKS_UDP_PENDING_CAP: usize = 8;
 
+/// A one-shot DNS-over-TCP query relayed through an HTTP/HTTPS proxy (P5): dial
+/// the proxy, CONNECT to the resolver, send the length-prefixed query, read the
+/// length-prefixed response, inject it back to the app, done. Used for HTTP/HTTPS
+/// proxies (which can't carry UDP) when "resolve DNS through the proxy" is on; a
+/// SOCKS5 proxy uses UDP ASSOCIATE instead. Per-query (Option A) — simple and
+/// leak-free, at the cost of a proxy handshake per lookup.
+struct DnsTcpJob {
+    /// Transport to the proxy (plain, or TLS for an HTTPS proxy).
+    io: UpstreamIo,
+    /// True until the non-blocking connect to the proxy completes.
+    connecting: bool,
+    /// CONNECT/handshake to the resolver; `None` once the tunnel is open.
+    handshake: Option<Handshake>,
+    hs_out: Vec<u8>,
+    /// The 2-byte-length-prefixed query, drained as it is written.
+    to_send: Vec<u8>,
+    query_sent: bool,
+    /// Accumulates the length-prefixed response until a full message is present.
+    resp_buf: Vec<u8>,
+    /// The app to answer, and the address the answer appears to come from (the
+    /// tunnel-local DNS placeholder the app targeted).
+    app: SocketAddr,
+    reply_src: SocketAddr,
+    /// For timeout reaping.
+    created_ms: i64,
+}
+
+/// Cap on concurrent in-flight DNS-over-TCP jobs; excess queries are dropped
+/// (the app's resolver retries). Bounds sockets during a burst of lookups.
+const DNS_TCP_MAX_JOBS: usize = 64;
+/// A DNS-over-TCP job that hasn't answered within this is reaped (fail-closed).
+const DNS_TCP_TIMEOUT_MS: i64 = 5_000;
+
 /// Allowed-flow telemetry coalesced over one flush window while the live log is
 /// closed and no app is engaged (P3-4). Drained into a single [`Event::coarse`]
 /// per flush instead of one [`Event::flow`] per packet.
@@ -360,6 +396,9 @@ pub struct Forwarder {
     /// SOCKS5 UDP ASSOCIATE sessions, used instead of `udp` when the proxy is
     /// SOCKS5 (P5, Stage 2).
     socks_udp: HashMap<UdpKey, Socks5UdpSession>,
+    /// In-flight DNS-over-TCP jobs, keyed by their socket token (P5): DNS routed
+    /// through an HTTP/HTTPS proxy when `proxy_dns_over_tcp` is on.
+    dns_tcp: HashMap<Token, DnsTcpJob>,
     routes: HashMap<Token, Route>,
     next_token: usize,
     outbox: Vec<Vec<u8>>,
@@ -376,6 +415,9 @@ pub struct Forwarder {
     /// HTTPS CONNECT or SOCKS5) instead of the origin. `None` = direct (today's
     /// behavior). A start-time setting, fixed for the session.
     proxy: Option<Proxy>,
+    /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5); live-updatable.
+    /// No effect without an HTTP/HTTPS proxy (SOCKS5 uses UDP ASSOCIATE).
+    proxy_dns_over_tcp: bool,
     /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
     tls: Option<MitmConfigs>,
     /// Decrypted HTTP transactions captured this session, drained on HAR export.
@@ -417,6 +459,7 @@ impl Forwarder {
             tcp: HashMap::new(),
             udp: HashMap::new(),
             socks_udp: HashMap::new(),
+            dns_tcp: HashMap::new(),
             routes: HashMap::new(),
             next_token: FIRST_DYNAMIC_TOKEN,
             outbox: Vec::new(),
@@ -430,6 +473,7 @@ impl Forwarder {
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
             proxy: build_proxy(config),
+            proxy_dns_over_tcp: config.proxy_dns_over_tcp,
             tls: build_tls_factory(config),
             har: Vec::new(),
             pinned: HashSet::new(),
@@ -529,6 +573,12 @@ impl Forwarder {
     pub fn set_cosmetic(&mut self, element_hiding: bool, scriptlets: bool) {
         self.cosmetic_element_hiding = element_hiding;
         self.cosmetic_scriptlets = scriptlets;
+    }
+
+    /// Toggle DNS-over-TCP-through-proxy live (P5). Takes effect on the next DNS
+    /// query; in-flight jobs finish as they are.
+    pub fn set_proxy_dns_over_tcp(&mut self, on: bool) {
+        self.proxy_dns_over_tcp = on;
     }
 
     /// Hand the cosmetic payload to a splice once its SNI host is known (P4-2).
@@ -808,10 +858,13 @@ impl Forwarder {
                     } else {
                         dgram.dst
                     };
-                    // A SOCKS5 proxy relays UDP via ASSOCIATE; otherwise (no proxy,
-                    // or DNS to an HTTP/HTTPS proxy) the datagram goes direct.
+                    // A SOCKS5 proxy relays UDP via ASSOCIATE. For an HTTP/HTTPS
+                    // proxy, DNS goes over DNS-over-TCP through the proxy when that
+                    // switch is on (else direct). Everything else goes direct.
                     if proxy_udp == Some(true) {
                         self.forward_udp_socks(dgram, upstream, env, bridge);
+                    } else if is_dns && self.proxy.is_some() && self.proxy_dns_over_tcp {
+                        self.forward_dns_over_proxy(dgram, upstream, env, bridge);
                     } else {
                         self.forward_udp(dgram, upstream, env, bridge);
                     }
@@ -939,6 +992,7 @@ impl Forwarder {
 
         self.reap_udp(now);
         self.reap_socks(now);
+        self.reap_dns_tcp(now);
         self.drain_stack_outbound();
     }
 
@@ -1020,6 +1074,7 @@ impl Forwarder {
                     self.pump_socks_relay(key);
                 }
             }
+            Some(Route::DnsTcp) => self.drive_dns_tcp(token),
             None => {}
         }
     }
@@ -1932,6 +1987,165 @@ impl Forwarder {
             self.teardown_socks(key);
         }
     }
+
+    // --- DNS-over-TCP through an HTTP/HTTPS proxy (P5) --------------------
+
+    /// Start a one-shot DNS-over-TCP job: dial the proxy, then (after CONNECT)
+    /// send the length-prefixed query to `resolver` and await the response. The
+    /// datagram was already allowed and its name learned by `handle_dns`.
+    fn forward_dns_over_proxy(
+        &mut self,
+        dgram: udp::UdpDatagram,
+        resolver: SocketAddr,
+        env: &mut jni::JNIEnv,
+        bridge: &Bridge,
+    ) {
+        if self.dns_tcp.len() >= DNS_TCP_MAX_JOBS || dgram.payload.len() > u16::MAX as usize {
+            return; // over the cap or an oversize query: drop (the app retries)
+        }
+        let Some(proxy) = self.proxy.clone() else { return };
+        // `connect_tcp` dials the proxy (and TLS-wraps it for an HTTPS proxy); the
+        // handshake below then CONNECTs onward to the resolver.
+        let Some((io, token)) = self.connect_tcp(resolver, env, bridge) else {
+            self.stats.connect_fail += 1;
+            return;
+        };
+        let mut to_send = Vec::with_capacity(dgram.payload.len() + 2);
+        to_send.extend_from_slice(&(dgram.payload.len() as u16).to_be_bytes());
+        to_send.extend_from_slice(&dgram.payload);
+        self.routes.insert(token, Route::DnsTcp);
+        self.dns_tcp.insert(
+            token,
+            DnsTcpJob {
+                io,
+                connecting: true,
+                handshake: Some(Handshake::connect(&proxy, resolver)),
+                hs_out: Vec::new(),
+                to_send,
+                query_sent: false,
+                resp_buf: Vec::new(),
+                app: dgram.src,
+                reply_src: dgram.dst,
+                created_ms: self.now_ms(),
+            },
+        );
+    }
+
+    /// Advance a DNS-over-TCP job on readiness: finish the proxy handshake, send
+    /// the query, and once a full length-prefixed response is buffered, inject it
+    /// toward the app and tear the job down. Any failure drops it (fail-closed).
+    fn drive_dns_tcp(&mut self, token: Token) {
+        // 1. Clear the connect flag on the first writable, checking for an error.
+        let connecting = self.dns_tcp.get(&token).map_or(false, |j| j.connecting);
+        if connecting {
+            let err = self.dns_tcp.get_mut(&token).and_then(|j| j.io.take_error().ok().flatten());
+            if let Some(j) = self.dns_tcp.get_mut(&token) {
+                j.connecting = false;
+            }
+            if err.is_some() {
+                self.teardown_dns_tcp(token);
+                return;
+            }
+        }
+        // 2. Proxy handshake (HTTP CONNECT, or HTTPS TLS + CONNECT).
+        if self.dns_tcp.get(&token).map_or(false, |j| j.handshake.is_some()) {
+            let progress = if let Some(j) = self.dns_tcp.get_mut(&token) {
+                match j.handshake.as_mut() {
+                    Some(hs) => pump_handshake_io(&mut j.io, hs, &mut j.hs_out),
+                    None => return,
+                }
+            } else {
+                return;
+            };
+            match progress {
+                HsPump::Pending => return,
+                HsPump::Failed => {
+                    self.teardown_dns_tcp(token);
+                    return;
+                }
+                HsPump::Done { leftover } => {
+                    if let Some(j) = self.dns_tcp.get_mut(&token) {
+                        j.handshake = None;
+                        j.resp_buf.extend_from_slice(&leftover); // normally empty
+                    }
+                }
+            }
+        }
+        // 3. Send the length-prefixed query once the tunnel is open.
+        let mut send_failed = false;
+        if let Some(j) = self.dns_tcp.get_mut(&token) {
+            if j.handshake.is_none() && !j.query_sent {
+                if flush_io(&mut j.io, &mut j.to_send) {
+                    j.query_sent = j.to_send.is_empty();
+                } else {
+                    send_failed = true;
+                }
+            }
+        }
+        if send_failed {
+            self.teardown_dns_tcp(token);
+            return;
+        }
+        // 4. Read the response; reply and finish once a full message is buffered.
+        let mut eof = false;
+        if let Some(j) = self.dns_tcp.get_mut(&token) {
+            if j.query_sent {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match j.io.read(&mut buf) {
+                        Ok(0) => {
+                            eof = true;
+                            break;
+                        }
+                        Ok(n) => j.resp_buf.extend_from_slice(&buf[..n]),
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            eof = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let reply = self.dns_tcp.get(&token).and_then(|j| {
+            if j.resp_buf.len() >= 2 {
+                let len = u16::from_be_bytes([j.resp_buf[0], j.resp_buf[1]]) as usize;
+                if j.resp_buf.len() >= 2 + len {
+                    return Some((j.reply_src, j.app, j.resp_buf[2..2 + len].to_vec()));
+                }
+            }
+            None
+        });
+        if let Some((reply_src, app, message)) = reply {
+            if let Some(packet) = udp::build_reply(reply_src, app, &message) {
+                self.outbox.push(packet);
+            }
+            self.stats.upstream_reply += 1;
+            self.teardown_dns_tcp(token);
+        } else if eof {
+            // Upstream closed before a full response arrived: drop (fail-closed).
+            self.teardown_dns_tcp(token);
+        }
+    }
+
+    fn teardown_dns_tcp(&mut self, token: Token) {
+        if let Some(mut job) = self.dns_tcp.remove(&token) {
+            let _ = self.registry.deregister(job.io.source());
+            self.routes.remove(&token);
+        }
+    }
+
+    fn reap_dns_tcp(&mut self, now: i64) {
+        let stale: Vec<Token> = self
+            .dns_tcp
+            .iter()
+            .filter(|(_, j)| now - j.created_ms > DNS_TCP_TIMEOUT_MS)
+            .map(|(k, _)| *k)
+            .collect();
+        for token in stale {
+            self.teardown_dns_tcp(token);
+        }
+    }
 }
 
 /// Build the shared rustls configs for TLS interception, or `None` when it's
@@ -2020,6 +2234,98 @@ fn pump_ctrl_handshake(stream: &mut TcpStream, hs: &mut Handshake, hs_out: &mut 
             }
         }
     }
+}
+
+/// Outcome of pumping a proxy handshake over an [`UpstreamIo`] ([`pump_handshake_io`]).
+enum HsPump {
+    Pending,
+    Done { leftover: Vec<u8> },
+    Failed,
+}
+
+/// Drive an HTTP CONNECT / SOCKS handshake over an [`UpstreamIo`] (plain or a TLS
+/// session to an HTTPS proxy). The `UpstreamIo`-based sibling of
+/// [`pump_ctrl_handshake`], used by DNS-over-TCP jobs which may run over a TLS
+/// proxy transport. On completion yields any bytes already past the reply.
+fn pump_handshake_io(io: &mut UpstreamIo, hs: &mut Handshake, hs_out: &mut Vec<u8>) -> HsPump {
+    // Complete the TLS handshake to an HTTPS proxy first.
+    if io.tls_handshaking() {
+        if io.pump_tls().is_err() {
+            return HsPump::Failed;
+        }
+        if io.tls_handshaking() {
+            return HsPump::Pending;
+        }
+    }
+    if !flush_io(io, hs_out) {
+        return HsPump::Failed;
+    }
+    if !hs_out.is_empty() {
+        return HsPump::Pending;
+    }
+    let mut input = Vec::new();
+    let mut eof = false;
+    let mut buf = [0u8; 4096];
+    loop {
+        match io.read(&mut buf) {
+            Ok(0) => {
+                eof = true;
+                break;
+            }
+            Ok(n) => input.extend_from_slice(&buf[..n]),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => return HsPump::Failed,
+        }
+    }
+    let mut first = true;
+    loop {
+        let step = {
+            let feed: &[u8] = if first { &input } else { &[] };
+            hs.step(feed)
+        };
+        first = false;
+        match step {
+            Ok(ProxyStep::Write(bytes)) => {
+                hs_out.extend_from_slice(&bytes);
+                if !flush_io(io, hs_out) {
+                    return HsPump::Failed;
+                }
+                if !hs_out.is_empty() {
+                    return HsPump::Pending;
+                }
+            }
+            Ok(ProxyStep::Read) => return if eof { HsPump::Failed } else { HsPump::Pending },
+            Ok(ProxyStep::Done { leftover }) => return HsPump::Done { leftover },
+            Err(e) => {
+                crate::alog!("DNS-over-TCP proxy handshake failed: {e}");
+                return HsPump::Failed;
+            }
+        }
+    }
+}
+
+/// Write as much of `out` as an [`UpstreamIo`] accepts, retaining the unsent tail.
+/// Returns false on a hard write error.
+fn flush_io(io: &mut UpstreamIo, out: &mut Vec<u8>) -> bool {
+    if out.is_empty() {
+        return true;
+    }
+    let data = std::mem::take(out);
+    let mut written = 0;
+    let mut ok = true;
+    while written < data.len() {
+        match io.write(&data[written..]) {
+            Ok(0) => break,
+            Ok(n) => written += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => {
+                ok = false;
+                break;
+            }
+        }
+    }
+    *out = data[written..].to_vec();
+    ok
 }
 
 /// Write as much of `out` as a plaintext socket accepts, retaining the unsent tail

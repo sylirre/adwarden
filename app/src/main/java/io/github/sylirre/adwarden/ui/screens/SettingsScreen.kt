@@ -74,6 +74,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val cosmeticElementHiding by viewModel.cosmeticElementHiding.collectAsStateWithLifecycle()
     val cosmeticScriptlets by viewModel.cosmeticScriptlets.collectAsStateWithLifecycle()
     val proxy by viewModel.proxy.collectAsStateWithLifecycle()
+    val proxyDnsOverTcp by viewModel.proxyDnsOverTcp.collectAsStateWithLifecycle()
     val caCertPem by viewModel.caCertPem.collectAsStateWithLifecycle()
     var showCaWizard by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -177,6 +178,13 @@ fun SettingsScreen(viewModel: MainViewModel) {
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 ProxySection(proxy = proxy, onApply = viewModel::setProxy)
+                ToggleRow(
+                    title = stringResource(R.string.settings_proxy_dns),
+                    subtitle = stringResource(R.string.settings_proxy_dns_sub),
+                    checked = proxyDnsOverTcp,
+                    onCheckedChange = viewModel::setProxyDnsOverTcp,
+                    leading = Icons.Rounded.Dns,
+                )
                 InfoRow(
                     Icons.Rounded.Info,
                     stringResource(R.string.settings_proxy_note),

@@ -153,8 +153,10 @@
     <string name="settings_proxy_username">Username (optional)</string>
     <string name="settings_proxy_password">Password (optional)</string>
     <string name="settings_proxy_apply">Apply &amp; reconnect</string>
+    <string name="settings_proxy_dns">Resolve DNS through the proxy</string>
+    <string name="settings_proxy_dns_sub">Sends DNS lookups through an HTTP/HTTPS proxy (over TCP) so they don\'t leak around it. Adds a little latency per lookup. SOCKS5 proxies already do this.</string>
     <string name="settings_proxy_note">How forwarding works</string>
-    <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. A SOCKS5 proxy also carries DNS and other UDP (e.g. QUIC) through the proxy. An HTTP/HTTPS proxy can\'t carry UDP, so DNS resolves directly and UDP apps fall back to TCP. Changing these settings reconnects the VPN.</string>
+    <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. A SOCKS5 proxy also carries DNS and other UDP (e.g. QUIC) through the proxy. An HTTP/HTTPS proxy can\'t carry UDP, so UDP apps fall back to TCP and DNS follows the switch above. Changing the host/type/port reconnects the VPN.</string>
     <string name="settings_system_integration">System integration</string>
     <string name="settings_always_on">Always-on VPN</string>
     <string name="settings_always_on_sub">Open Android\'s VPN settings to keep Adwarden always connected, and optionally block traffic while it\'s off (lockdown).</string>

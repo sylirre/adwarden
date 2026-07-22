@@ -62,6 +62,9 @@ pub enum Command {
     /// Set the cosmetic-filtering mode (P4): element hiding and/or scriptlet
     /// injection into `text/html` on inspected flows.
     SetCosmetic { element_hiding: bool, scriptlets: bool },
+    /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5), or resolve it
+    /// directly. No effect without an HTTP/HTTPS proxy.
+    SetProxyDns(bool),
 }
 
 pub struct Session {
@@ -251,6 +254,7 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
             Command::SetCosmetic { element_hiding, scriptlets } => {
                 forwarder.set_cosmetic(element_hiding, scriptlets)
             }
+            Command::SetProxyDns(on) => forwarder.set_proxy_dns_over_tcp(on),
         }
     }
 }

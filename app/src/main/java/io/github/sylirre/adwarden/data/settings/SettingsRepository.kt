@@ -67,6 +67,9 @@ data class AppSettings(
     val proxyPort: Int = 0,
     val proxyUsername: String = "",
     val proxyPassword: String = "",
+    /** Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5). Live; no effect
+     *  without an HTTP/HTTPS proxy (SOCKS5 always carries DNS itself). Default on. */
+    val proxyDnsOverTcp: Boolean = true,
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -106,6 +109,7 @@ class SettingsRepository @Inject constructor(
             proxyPort = prefs[KEY_PROXY_PORT] ?: 0,
             proxyUsername = prefs[KEY_PROXY_USERNAME] ?: "",
             proxyPassword = prefs[KEY_PROXY_PASSWORD] ?: "",
+            proxyDnsOverTcp = prefs[KEY_PROXY_DNS_OVER_TCP] ?: true,
         )
     }
 
@@ -144,6 +148,9 @@ class SettingsRepository @Inject constructor(
             it[KEY_PROXY_PASSWORD] = password
         }
 
+    suspend fun setProxyDnsOverTcp(value: Boolean) =
+        store.edit { it[KEY_PROXY_DNS_OVER_TCP] = value }
+
     private companion object {
         val KEY_ONBOARDED = booleanPreferencesKey("onboarded")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
@@ -161,5 +168,6 @@ class SettingsRepository @Inject constructor(
         val KEY_PROXY_PORT = intPreferencesKey("proxy_port")
         val KEY_PROXY_USERNAME = stringPreferencesKey("proxy_username")
         val KEY_PROXY_PASSWORD = stringPreferencesKey("proxy_password")
+        val KEY_PROXY_DNS_OVER_TCP = booleanPreferencesKey("proxy_dns_over_tcp")
     }
 }

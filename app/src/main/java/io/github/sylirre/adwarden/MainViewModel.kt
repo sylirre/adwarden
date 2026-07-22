@@ -90,6 +90,10 @@ class MainViewModel @Inject constructor(
             ProxyUiState(initial.proxyKind, initial.proxyHost, initial.proxyPort, initial.proxyUsername, initial.proxyPassword),
         )
 
+    val proxyDnsOverTcp: StateFlow<Boolean> = settings.settings
+        .map { it.proxyDnsOverTcp }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.proxyDnsOverTcp)
+
     // The interception CA cert (PEM), loaded lazily when the install wizard opens.
     // Null until generated/loaded.
     private val _caCertPem = MutableStateFlow<String?>(null)
@@ -187,6 +191,11 @@ class MainViewModel @Inject constructor(
      *  re-establishes to apply it (see AdwardenVpnService's proxy observer). */
     fun setProxy(kind: ProxyKind, host: String, port: Int, username: String, password: String) {
         viewModelScope.launch { settings.setProxy(kind, host, port, username, password) }
+    }
+
+    /** Toggle DNS-over-TCP through an HTTP/HTTPS proxy (live; no reconnect). */
+    fun setProxyDnsOverTcp(value: Boolean) {
+        viewModelScope.launch { settings.setProxyDnsOverTcp(value) }
     }
 
     private companion object {

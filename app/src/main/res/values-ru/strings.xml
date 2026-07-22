@@ -144,8 +144,10 @@
     <string name="settings_proxy_username">Имя пользователя (необязательно)</string>
     <string name="settings_proxy_password">Пароль (необязательно)</string>
     <string name="settings_proxy_apply">Применить и переподключить</string>
+    <string name="settings_proxy_dns">Разрешать DNS через прокси</string>
+    <string name="settings_proxy_dns_sub">Направляет DNS-запросы через прокси HTTP/HTTPS (по TCP), чтобы они не шли в обход. Немного увеличивает задержку каждого запроса. Прокси SOCKS5 делают это по умолчанию.</string>
     <string name="settings_proxy_note">Как работает перенаправление</string>
-    <string name="settings_proxy_note_body">Разрешённые TCP-соединения направляются через прокси; если он недоступен, соединение блокируется, а не идёт в обход. Прокси SOCKS5 также передаёт через себя DNS и другой UDP-трафик (например, QUIC). Прокси HTTP/HTTPS не умеет передавать UDP, поэтому DNS разрешается напрямую, а UDP-приложения переходят на TCP. Изменение этих настроек переподключает VPN.</string>
+    <string name="settings_proxy_note_body">Разрешённые TCP-соединения направляются через прокси; если он недоступен, соединение блокируется, а не идёт в обход. Прокси SOCKS5 также передаёт через себя DNS и другой UDP-трафик (например, QUIC). Прокси HTTP/HTTPS не умеет передавать UDP, поэтому UDP-приложения переходят на TCP, а DNS зависит от переключателя выше. Изменение хоста, типа или порта переподключает VPN.</string>
     <string name="settings_system_integration">Интеграция с системой</string>
     <string name="settings_always_on">Постоянная VPN</string>
     <string name="settings_always_on_sub">Откройте настройки VPN Android, чтобы Adwarden был всегда подключён и при желании блокировал трафик без VPN.</string>
