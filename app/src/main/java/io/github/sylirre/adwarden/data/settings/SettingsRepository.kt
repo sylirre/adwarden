@@ -68,8 +68,9 @@ data class AppSettings(
     val proxyUsername: String = "",
     val proxyPassword: String = "",
     /** Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5). Live; no effect
-     *  without an HTTP/HTTPS proxy (SOCKS5 always carries DNS itself). Default on. */
-    val proxyDnsOverTcp: Boolean = true,
+     *  without an HTTP/HTTPS proxy (SOCKS5 always carries DNS itself). Off by
+     *  default — needs the proxy to allow CONNECT to the resolver's port. */
+    val proxyDnsOverTcp: Boolean = false,
 )
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
@@ -109,7 +110,7 @@ class SettingsRepository @Inject constructor(
             proxyPort = prefs[KEY_PROXY_PORT] ?: 0,
             proxyUsername = prefs[KEY_PROXY_USERNAME] ?: "",
             proxyPassword = prefs[KEY_PROXY_PASSWORD] ?: "",
-            proxyDnsOverTcp = prefs[KEY_PROXY_DNS_OVER_TCP] ?: true,
+            proxyDnsOverTcp = prefs[KEY_PROXY_DNS_OVER_TCP] ?: false,
         )
     }
 

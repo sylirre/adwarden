@@ -415,6 +415,10 @@ pub struct Forwarder {
     /// HTTPS CONNECT or SOCKS5) instead of the origin. `None` = direct (today's
     /// behavior). A start-time setting, fixed for the session.
     proxy: Option<Proxy>,
+    /// A proxy is configured but couldn't be set up (bad/unresolvable address).
+    /// When true, all forwarding fails closed (blocked) so nothing leaks around
+    /// the intended proxy. Mutually exclusive with `proxy` being `Some`.
+    proxy_broken: bool,
     /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5); live-updatable.
     /// No effect without an HTTP/HTTPS proxy (SOCKS5 uses UDP ASSOCIATE).
     proxy_dns_over_tcp: bool,
@@ -453,6 +457,7 @@ struct Verdict {
 impl Forwarder {
     pub fn new(config: &Config, registry: Registry) -> Self {
         let (dns_v4, dns_v6) = parse_dns_upstreams(&config.dns_servers);
+        let (proxy_active, proxy_broken) = build_proxy(config);
         Forwarder {
             stack: NetStack::new(config.mtu),
             registry,
@@ -472,7 +477,8 @@ impl Forwarder {
             pcap: None,
             dns_upstream_v4: dns_v4,
             dns_upstream_v6: dns_v6,
-            proxy: build_proxy(config),
+            proxy: proxy_active,
+            proxy_broken,
             proxy_dns_over_tcp: config.proxy_dns_over_tcp,
             tls: build_tls_factory(config),
             har: Vec::new(),
@@ -771,6 +777,15 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
+                // Fail closed: a configured-but-unusable proxy (P5) blocks all
+                // forwarding rather than leaking around it. RST so the app fails fast.
+                if self.proxy_broken {
+                    if let Some(rst) = reset_for_syn(packet) {
+                        self.outbox.push(rst);
+                    }
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return;
+                }
                 // DoT (TLS/853): off = relay raw; block = drop; filter = intercept
                 // when we can, else drop (fail closed — never leak it unfiltered).
                 if decoded.dst_port == DOT_PORT {
@@ -811,11 +826,17 @@ impl Forwarder {
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return; // firewall drop (covers this app's DNS too)
                 }
+                // Fail closed: a configured-but-unusable proxy (P5) drops all UDP
+                // (incl. DNS) rather than leaking around it.
+                if self.proxy_broken {
+                    batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
+                    return;
+                }
                 // Upstream proxy (P5): a SOCKS5 proxy carries all UDP via UDP
-                // ASSOCIATE (Stage 2); an HTTP/HTTPS proxy can't carry UDP at all,
-                // so its non-DNS UDP is dropped fail-closed rather than leaking
-                // around the proxy (QUIC then falls back to proxied TCP). DNS to an
-                // HTTP/HTTPS proxy still resolves directly so name resolution works.
+                // ASSOCIATE; an HTTP/HTTPS proxy can't carry UDP, so its non-DNS UDP
+                // is dropped fail-closed (QUIC then falls back to proxied TCP). DNS
+                // to an HTTP/HTTPS proxy follows the `proxy_dns_over_tcp` switch:
+                // DNS-over-TCP through the proxy when on, else resolved directly.
                 let proxy_udp = self.proxy.as_ref().map(|p| p.supports_udp());
                 let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if proxy_udp == Some(false) && !is_dns {
@@ -2108,13 +2129,7 @@ impl Forwarder {
             }
         }
         let reply = self.dns_tcp.get(&token).and_then(|j| {
-            if j.resp_buf.len() >= 2 {
-                let len = u16::from_be_bytes([j.resp_buf[0], j.resp_buf[1]]) as usize;
-                if j.resp_buf.len() >= 2 + len {
-                    return Some((j.reply_src, j.app, j.resp_buf[2..2 + len].to_vec()));
-                }
-            }
-            None
+            take_dns_tcp_response(&j.resp_buf).map(|msg| (j.reply_src, j.app, msg.to_vec()))
         });
         if let Some((reply_src, app, message)) = reply {
             if let Some(packet) = udp::build_reply(reply_src, app, &message) {
@@ -2328,6 +2343,21 @@ fn flush_io(io: &mut UpstreamIo, out: &mut Vec<u8>) -> bool {
     ok
 }
 
+/// Extract one complete DNS-over-TCP message from the front of `buf` — RFC 7766
+/// framing: a 2-byte big-endian length prefix then that many bytes. `None` until a
+/// full message is buffered. Any bytes past the first message are ignored (a DNS
+/// query yields exactly one response, after which the job is torn down).
+fn take_dns_tcp_response(buf: &[u8]) -> Option<&[u8]> {
+    if buf.len() < 2 {
+        return None;
+    }
+    let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    if buf.len() < 2 + len {
+        return None;
+    }
+    Some(&buf[2..2 + len])
+}
+
 /// Write as much of `out` as a plaintext socket accepts, retaining the unsent tail
 /// in `out`. Returns false on a hard write error.
 fn flush_plain(stream: &mut TcpStream, out: &mut Vec<u8>) -> bool {
@@ -2352,24 +2382,26 @@ fn flush_plain(stream: &mut TcpStream, out: &mut Vec<u8>) -> bool {
     ok
 }
 
-/// Validate the proxy config into a dialable [`Proxy`], or `None` when disabled
-/// (direct). A *misconfigured* proxy (enabled but no resolvable address) also
-/// yields `None` — logged, and the session dials direct — so a typo can't brick
-/// connectivity; a *reachable* proxy that then fails a flow is handled fail-closed.
+/// Resolve the proxy config into `(proxy, broken)`:
+///  - `(None, false)` — no proxy configured; dial origins directly.
+///  - `(Some(p), false)` — an active, dialable proxy.
+///  - `(None, true)` — a proxy is configured but couldn't be set up (bad/unresolvable
+///    address). The datapath then fails **closed** (blocks all forwarding) rather
+///    than leaking around it — so a broken proxy never silently degrades to direct.
 ///
 /// The host may be a name: it's resolved here, on the datapath *startup* thread
 /// (before the poll loop), which is safe because our process bypasses the tunnel
 /// so `getaddrinfo` egresses normally. Resolution happens once per session.
-fn build_proxy(config: &Config) -> Option<Proxy> {
+fn build_proxy(config: &Config) -> (Option<Proxy>, bool) {
     use std::net::ToSocketAddrs;
     let pc = &config.proxy;
     if pc.kind == crate::proxy::ProxyKind::None {
-        return None;
+        return (None, false); // no proxy → direct
     }
     // Fast path: the address is already a literal IP (in `ip` or `host`).
     if let Some(proxy) = Proxy::from_config(pc) {
         crate::alog!("upstream proxy enabled: {:?} {}", proxy.kind, proxy.addr);
-        return Some(proxy);
+        return (Some(proxy), false);
     }
     // Otherwise resolve the hostname.
     let host = pc.host.trim();
@@ -2385,12 +2417,13 @@ fn build_proxy(config: &Config) -> Option<Proxy> {
                     password: clean(&pc.password),
                 };
                 crate::alog!("upstream proxy enabled: {:?} {} (resolved {})", proxy.kind, addr, host);
-                return Some(proxy);
+                return (Some(proxy), false);
             }
         }
     }
-    crate::alog!("proxy configured but address unresolved/invalid; dialing direct");
-    None
+    // Configured but unusable: fail closed rather than leak around the proxy.
+    crate::alog!("proxy configured but address unresolved/invalid; blocking (fail closed)");
+    (None, true)
 }
 
 /// Pick the first IPv4 and IPv6 upstream resolvers from the config, falling back
@@ -2419,6 +2452,9 @@ fn parse_dns_upstreams(servers: &[String]) -> (IpAddr, IpAddr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{TcpListener, TcpStream as StdTcpStream};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn parses_dns_upstreams_with_fallback() {
@@ -2430,5 +2466,188 @@ mod tests {
         let (v4, v6) = parse_dns_upstreams(&[]);
         assert_eq!(v4, IpAddr::V4(DEFAULT_DNS_V4));
         assert_eq!(v6, IpAddr::V6(DEFAULT_DNS_V6));
+    }
+
+    #[test]
+    fn take_dns_tcp_response_framing() {
+        // Not enough for even the 2-byte length prefix.
+        assert!(take_dns_tcp_response(&[]).is_none());
+        assert!(take_dns_tcp_response(&[0x00]).is_none());
+        // Length says 10 but only 3 payload bytes present ⇒ wait for more.
+        assert!(take_dns_tcp_response(&[0x00, 0x0A, 1, 2, 3]).is_none());
+        // Exactly one 4-byte message.
+        assert_eq!(take_dns_tcp_response(&[0x00, 0x04, b'a', b'b', b'c', b'd']), Some(&b"abcd"[..]));
+        // Bytes past the first message are ignored (one query ⇒ one response).
+        assert_eq!(take_dns_tcp_response(&[0x00, 0x02, 0xAA, 0xBB, 0xCC]), Some(&[0xAA, 0xBB][..]));
+        // Zero-length message.
+        assert_eq!(take_dns_tcp_response(&[0x00, 0x00]), Some(&[][..]));
+    }
+
+    #[test]
+    fn build_proxy_direct_active_broken() {
+        // No proxy configured ⇒ direct.
+        let (p, broken) = build_proxy(&Config::default());
+        assert!(p.is_none() && !broken, "no proxy → direct");
+
+        // A literal IP ⇒ active (no resolution needed).
+        let active = Config {
+            proxy: proxy::ProxyConfig {
+                kind: proxy::ProxyKind::Http,
+                host: "10.0.0.1".into(),
+                ip: String::new(),
+                port: 8080,
+                username: None,
+                password: None,
+            },
+            ..Default::default()
+        };
+        let (p, broken) = build_proxy(&active);
+        assert!(p.is_some() && !broken, "literal IP → active");
+
+        // Configured but invalid (port 0) ⇒ broken (fail closed), no DNS attempted.
+        let bad = Config {
+            proxy: proxy::ProxyConfig {
+                kind: proxy::ProxyKind::Http,
+                host: "10.0.0.1".into(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (p, broken) = build_proxy(&bad);
+        assert!(p.is_none() && broken, "configured but invalid → broken");
+    }
+
+    // --- Loopback handshake tests (real socket glue over 127.0.0.1) -------
+
+    /// Spawn a one-shot fake proxy on 127.0.0.1; `handler` runs on the accepted
+    /// (blocking) socket. Returns the bound address to dial.
+    fn fake_proxy<F: FnOnce(StdTcpStream) + Send + 'static>(handler: F) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            if let Ok((sock, _)) = listener.accept() {
+                handler(sock);
+            }
+        });
+        addr
+    }
+
+    /// A non-blocking mio client stream connected to `addr` (loopback connect is
+    /// synchronous, so no connect race in the test).
+    fn dial(addr: SocketAddr) -> TcpStream {
+        let s = StdTcpStream::connect(addr).unwrap();
+        s.set_nonblocking(true).unwrap();
+        TcpStream::from_std(s)
+    }
+
+    fn test_proxy(addr: SocketAddr, kind: proxy::ProxyKind) -> Proxy {
+        Proxy::from_config(&proxy::ProxyConfig {
+            kind,
+            host: addr.ip().to_string(),
+            ip: String::new(),
+            port: addr.port(),
+            username: None,
+            password: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn loopback_http_connect_succeeds() {
+        let addr = fake_proxy(|mut sock| {
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 512];
+            loop {
+                let n = sock.read(&mut tmp).unwrap();
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            assert!(buf.starts_with(b"CONNECT 1.2.3.4:443 "), "unexpected CONNECT: {buf:?}");
+            let _ = sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+            thread::sleep(Duration::from_millis(50));
+        });
+        let proxy = test_proxy(addr, proxy::ProxyKind::Http);
+        let mut io = UpstreamIo::Plain(dial(addr));
+        let mut hs = Handshake::connect(&proxy, "1.2.3.4:443".parse().unwrap());
+        let mut hs_out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match pump_handshake_io(&mut io, &mut hs, &mut hs_out) {
+                HsPump::Done { .. } => break,
+                HsPump::Failed => panic!("HTTP CONNECT handshake failed"),
+                HsPump::Pending => {
+                    assert!(Instant::now() < deadline, "handshake timed out");
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loopback_socks5_associate_succeeds() {
+        let addr = fake_proxy(|mut sock| {
+            let mut buf = [0u8; 512];
+            let n = sock.read(&mut buf).unwrap();
+            assert_eq!(&buf[..n], &[0x05, 0x01, 0x00], "greeting (no-auth)");
+            let _ = sock.write_all(&[0x05, 0x00]);
+            let _ = sock.read(&mut buf).unwrap();
+            assert_eq!(buf[0], 0x05);
+            assert_eq!(buf[1], 0x03, "UDP ASSOCIATE command");
+            // Reply: success, relay bound at 10.0.0.9:5555.
+            let _ = sock.write_all(&[0x05, 0x00, 0x00, 0x01, 10, 0, 0, 9, 0x15, 0xB3]);
+            thread::sleep(Duration::from_millis(50));
+        });
+        let proxy = test_proxy(addr, proxy::ProxyKind::Socks5);
+        let mut stream = dial(addr);
+        let mut hs = Handshake::udp_associate(&proxy);
+        let mut hs_out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match pump_ctrl_handshake(&mut stream, &mut hs, &mut hs_out) {
+                CtrlStep::Ready(bound) => {
+                    assert_eq!(bound, Some("10.0.0.9:5555".parse().unwrap()));
+                    break;
+                }
+                CtrlStep::Failed => panic!("SOCKS5 associate failed"),
+                CtrlStep::Pending => {
+                    assert!(Instant::now() < deadline, "handshake timed out");
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loopback_socks5_refused_fails() {
+        let addr = fake_proxy(|mut sock| {
+            let mut buf = [0u8; 512];
+            let _ = sock.read(&mut buf).unwrap(); // greeting
+            let _ = sock.write_all(&[0x05, 0x00]);
+            let _ = sock.read(&mut buf).unwrap(); // CONNECT request
+            // REP 0x05 = connection refused.
+            let _ = sock.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            thread::sleep(Duration::from_millis(50));
+        });
+        let proxy = test_proxy(addr, proxy::ProxyKind::Socks5);
+        let mut stream = dial(addr);
+        let mut hs = Handshake::connect(&proxy, "1.2.3.4:80".parse().unwrap());
+        let mut hs_out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match pump_ctrl_handshake(&mut stream, &mut hs, &mut hs_out) {
+                CtrlStep::Failed => break, // expected: proxy refused
+                CtrlStep::Ready(_) => panic!("should have failed on REP 5"),
+                CtrlStep::Pending => {
+                    assert!(Instant::now() < deadline, "handshake timed out");
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
     }
 }

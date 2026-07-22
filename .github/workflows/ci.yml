@@ -45,8 +45,11 @@ jobs:
           path: app/build/reports/tests/
           if-no-files-found: ignore
 
-  # Host-side Rust tests for the pure library crates. `core` is a cdylib that
-  # only builds against the Android targets, so it is excluded here.
+  # Host-side Rust tests: the library crates plus `core`'s host-testable logic
+  # (the proxy protocol + datapath handshake/framing state machines). Only the
+  # Android cdylib artifact of `core` — the `.so` with the JNI FFI — needs the
+  # Android targets, and host `cargo test` doesn't build that, so the whole
+  # workspace tests fine here.
   rust-tests:
     name: Rust library tests
     runs-on: ubuntu-latest
@@ -63,7 +66,7 @@ jobs:
 
       - name: Run Rust tests
         working-directory: rust
-        run: cargo test --workspace --exclude core --locked
+        run: cargo test --workspace --locked
 
   # Full debug build: cross-compiles the Rust native core for all four ABIs,
   # packages the debug APK, and publishes it as an artifact.

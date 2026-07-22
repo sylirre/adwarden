@@ -12,10 +12,6 @@ fn default_mtu() -> usize {
     1500
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// How the datapath treats encrypted DNS (DoT/DoH). `Off` leaves it untouched;
 /// `Block` drops it so clients fall back to plaintext we can filter; `Filter`
 /// TLS-intercepts it and runs the inner queries through the blocklist engine,
@@ -73,9 +69,10 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5) rather than
     /// resolving it directly. Only affects HTTP/HTTPS proxies — a SOCKS5 proxy
-    /// always carries DNS over UDP ASSOCIATE. Live-updatable. Default on
-    /// (leak-free); off trades the per-query latency for a direct DNS leak.
-    #[serde(default = "default_true")]
+    /// always carries DNS over UDP ASSOCIATE. Live-updatable. Off by default: it
+    /// requires the proxy to permit CONNECT to the resolver's port (53), which
+    /// many forward proxies refuse, so it's opt-in.
+    #[serde(default)]
     pub proxy_dns_over_tcp: bool,
 }
 
@@ -92,7 +89,7 @@ impl Default for Config {
             cosmetic_element_hiding: false,
             cosmetic_scriptlets: false,
             proxy: ProxyConfig::default(),
-            proxy_dns_over_tcp: true,
+            proxy_dns_over_tcp: false,
         }
     }
 }
