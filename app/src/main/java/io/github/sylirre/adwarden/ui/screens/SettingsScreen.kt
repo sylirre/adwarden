@@ -58,6 +58,7 @@ import io.github.sylirre.adwarden.MainViewModel
 import io.github.sylirre.adwarden.ProxyUiState
 import io.github.sylirre.adwarden.R
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.ThemeMode
 import io.github.sylirre.adwarden.ui.components.AdwCard
@@ -353,15 +354,17 @@ private fun EncryptedDnsPicker(selected: EncryptedDnsMode, onSelect: (EncryptedD
 @Composable
 private fun ProxySection(
     proxy: ProxyUiState,
-    onApply: (ProxyKind, String, Int, String, String) -> Unit,
+    onApply: (ProxyKind, ProxyEndpoint) -> Unit,
 ) {
-    // Seed local edit state from the saved config; re-seed whenever it changes
-    // (e.g. right after Apply, when the DataStore flow re-emits the new values).
     var kind by remember(proxy) { mutableStateOf(proxy.kind) }
-    var host by remember(proxy) { mutableStateOf(proxy.host) }
-    var port by remember(proxy) { mutableStateOf(if (proxy.port in 1..65535) proxy.port.toString() else "") }
-    var username by remember(proxy) { mutableStateOf(proxy.username) }
-    var password by remember(proxy) { mutableStateOf(proxy.password) }
+    // The fields show the *selected* type's saved endpoint; re-seed whenever the
+    // picker switches type (or the saved config changes) so each type keeps its
+    // own host/port/credentials.
+    val saved = proxy.endpoint(kind)
+    var host by remember(proxy, kind) { mutableStateOf(saved.host) }
+    var port by remember(proxy, kind) { mutableStateOf(if (saved.port in 1..65535) saved.port.toString() else "") }
+    var username by remember(proxy, kind) { mutableStateOf(saved.username) }
+    var password by remember(proxy, kind) { mutableStateOf(saved.password) }
 
     Column(
         Modifier
@@ -417,11 +420,13 @@ private fun ProxySection(
 
         Spacer(Modifier.height(12.dp))
         val portNum = port.toIntOrNull() ?: 0
+        val edited = ProxyEndpoint(host.trim(), portNum, username, password)
         val valid = kind == ProxyKind.NONE || (host.isNotBlank() && portNum in 1..65535)
-        val dirty = kind != proxy.kind || host.trim() != proxy.host ||
-            portNum != proxy.port || username != proxy.username || password != proxy.password
+        // Dirty when the active type changed, or the selected type's fields differ
+        // from what's saved for it.
+        val dirty = kind != proxy.kind || (kind != ProxyKind.NONE && edited != saved)
         Button(
-            onClick = { onApply(kind, host.trim(), portNum, username, password) },
+            onClick = { onApply(kind, edited) },
             enabled = valid && dirty,
             modifier = Modifier.align(Alignment.End),
         ) {

@@ -34,8 +34,10 @@ import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.FilterRepository
 import io.github.sylirre.adwarden.data.StatsRepository
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
+import io.github.sylirre.adwarden.data.settings.activeProxy
 import io.github.sylirre.adwarden.firewall.NetworkStateMonitor
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -438,7 +440,9 @@ class AdwardenVpnService : VpnService() {
         // start; distinctUntilChanged means only real edits trigger a reconnect.
         scope.launch {
             settings.settings
-                .map { listOf(it.proxyKind, it.proxyHost, it.proxyPort, it.proxyUsername, it.proxyPassword) }
+                // Only the *active* proxy (kind + its endpoint) drives a reconnect;
+                // editing an inactive type's saved config does not.
+                .map { s -> val e = s.activeProxy(); listOf(s.proxyKind, e?.host, e?.port, e?.username, e?.password) }
                 .distinctUntilChanged()
                 .drop(1)
                 .collect {
@@ -531,10 +535,7 @@ class AdwardenVpnService : VpnService() {
             val hiding: Boolean,
             val scriptlets: Boolean,
             val proxyKind: ProxyKind,
-            val proxyHost: String,
-            val proxyPort: Int,
-            val proxyUser: String,
-            val proxyPass: String,
+            val proxy: ProxyEndpoint?,
             val proxyDnsOverTcp: Boolean,
         )
         val cfg = runBlocking {
@@ -546,10 +547,7 @@ class AdwardenVpnService : VpnService() {
                 s.cosmeticElementHiding,
                 s.cosmeticScriptlets,
                 s.proxyKind,
-                s.proxyHost,
-                s.proxyPort,
-                s.proxyUsername,
-                s.proxyPassword,
+                s.activeProxy(),
                 s.proxyDnsOverTcp,
             )
         }
@@ -568,15 +566,17 @@ class AdwardenVpnService : VpnService() {
                 put("ca_cert_pem", it.certPem)
                 put("ca_key_pem", it.keyPem)
             }
-            // Upstream proxy (P5): a start-time setting. The native side resolves a
-            // hostname `host` (our process bypasses the tunnel), so we pass it as-is.
-            if (cfg.proxyKind != ProxyKind.NONE && cfg.proxyHost.isNotBlank() && cfg.proxyPort in 1..65535) {
+            // Upstream proxy (P5): only the *active* type's endpoint is sent. A
+            // start-time setting; the native side resolves a hostname `host` (our
+            // process bypasses the tunnel), so we pass it as-is.
+            val p = cfg.proxy
+            if (cfg.proxyKind != ProxyKind.NONE && p != null && p.host.isNotBlank() && p.port in 1..65535) {
                 put("proxy", JSONObject().apply {
                     put("kind", cfg.proxyKind.name.lowercase())
-                    put("host", cfg.proxyHost)
-                    put("port", cfg.proxyPort)
-                    if (cfg.proxyUser.isNotEmpty()) put("username", cfg.proxyUser)
-                    if (cfg.proxyPass.isNotEmpty()) put("password", cfg.proxyPass)
+                    put("host", p.host)
+                    put("port", p.port)
+                    if (p.username.isNotEmpty()) put("username", p.username)
+                    if (p.password.isNotEmpty()) put("password", p.password)
                 })
             }
         }.toString()

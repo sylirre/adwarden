@@ -9,6 +9,7 @@ import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.StatsRepository
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
+import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
 import io.github.sylirre.adwarden.data.settings.SettingsRepository
 import io.github.sylirre.adwarden.data.settings.ThemeMode
@@ -31,14 +32,23 @@ import javax.inject.Inject
 /** A ranked dashboard row: a display [label] and its [count]. */
 data class RankedItem(val label: String, val count: Long)
 
-/** Snapshot of the upstream-proxy settings for the proxy config form (P5). */
+/** Snapshot of the upstream-proxy settings for the proxy config form (P5). Carries
+ *  every type's saved endpoint so the form can show the selected type's details and
+ *  switching types never loses the others. */
 data class ProxyUiState(
     val kind: ProxyKind = ProxyKind.NONE,
-    val host: String = "",
-    val port: Int = 0,
-    val username: String = "",
-    val password: String = "",
-)
+    val http: ProxyEndpoint = ProxyEndpoint(),
+    val https: ProxyEndpoint = ProxyEndpoint(),
+    val socks5: ProxyEndpoint = ProxyEndpoint(),
+) {
+    /** The saved endpoint for `kind` (empty for [ProxyKind.NONE]). */
+    fun endpoint(kind: ProxyKind): ProxyEndpoint = when (kind) {
+        ProxyKind.HTTP -> http
+        ProxyKind.HTTPS -> https
+        ProxyKind.SOCKS5 -> socks5
+        ProxyKind.NONE -> ProxyEndpoint()
+    }
+}
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
@@ -83,11 +93,11 @@ class MainViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.cosmeticScriptlets)
 
     val proxy: StateFlow<ProxyUiState> = settings.settings
-        .map { ProxyUiState(it.proxyKind, it.proxyHost, it.proxyPort, it.proxyUsername, it.proxyPassword) }
+        .map { ProxyUiState(it.proxyKind, it.httpProxy, it.httpsProxy, it.socks5Proxy) }
         .stateIn(
             viewModelScope,
             SharingStarted.Eagerly,
-            ProxyUiState(initial.proxyKind, initial.proxyHost, initial.proxyPort, initial.proxyUsername, initial.proxyPassword),
+            ProxyUiState(initial.proxyKind, initial.httpProxy, initial.httpsProxy, initial.socks5Proxy),
         )
 
     val proxyDnsOverTcp: StateFlow<Boolean> = settings.settings
@@ -187,10 +197,11 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { _caCertPem.value = ca.caCertPem() }
     }
 
-    /** Persist the proxy config. It's a start-time setting, so the running tunnel
-     *  re-establishes to apply it (see AdwardenVpnService's proxy observer). */
-    fun setProxy(kind: ProxyKind, host: String, port: Int, username: String, password: String) {
-        viewModelScope.launch { settings.setProxy(kind, host, port, username, password) }
+    /** Persist the active proxy kind and (when a type is selected) its endpoint. A
+     *  start-time setting, so the running tunnel re-establishes to apply it (see
+     *  AdwardenVpnService's proxy observer). */
+    fun setProxy(kind: ProxyKind, endpoint: ProxyEndpoint) {
+        viewModelScope.launch { settings.setProxy(kind, endpoint) }
     }
 
     /** Toggle DNS-over-TCP through an HTTP/HTTPS proxy (live; no reconnect). */

@@ -31,6 +31,15 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
  */
 enum class ProxyKind { NONE, HTTP, HTTPS, SOCKS5 }
 
+/** Saved connection details for one proxy type (P5). HTTP, HTTPS and SOCKS5 each
+ *  keep their own, so switching the active type never discards the others. */
+data class ProxyEndpoint(
+    val host: String = "",
+    val port: Int = 0,
+    val username: String = "",
+    val password: String = "",
+)
+
 /**
  * How the datapath treats encrypted DNS (DoT/DoH).
  *  - OFF: leave it alone.
@@ -60,18 +69,27 @@ data class AppSettings(
      *  per-flow telemetry. Off by default; a pure display/telemetry preference that
      *  never affects filtering (it only gates the [LiveLogState] demand signal). */
     val liveTrafficMonitoring: Boolean = false,
-    /** Upstream proxy (P5). A start-time setting: changing any field re-establishes
-     *  the tunnel. [proxyHost] may be a hostname or IP (resolved at start). */
+    /** Upstream proxy (P5). [proxyKind] selects the active type; each type keeps its
+     *  own saved [ProxyEndpoint] so switching types doesn't lose the others' details.
+     *  A start-time setting: changing the active config re-establishes the tunnel.
+     *  A host may be a hostname or IP (resolved at start). */
     val proxyKind: ProxyKind = ProxyKind.NONE,
-    val proxyHost: String = "",
-    val proxyPort: Int = 0,
-    val proxyUsername: String = "",
-    val proxyPassword: String = "",
+    val httpProxy: ProxyEndpoint = ProxyEndpoint(),
+    val httpsProxy: ProxyEndpoint = ProxyEndpoint(),
+    val socks5Proxy: ProxyEndpoint = ProxyEndpoint(),
     /** Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5). Live; no effect
      *  without an HTTP/HTTPS proxy (SOCKS5 always carries DNS itself). Off by
      *  default — needs the proxy to allow CONNECT to the resolver's port. */
     val proxyDnsOverTcp: Boolean = false,
 )
+
+/** The saved endpoint for the active [AppSettings.proxyKind], or null when off. */
+fun AppSettings.activeProxy(): ProxyEndpoint? = when (proxyKind) {
+    ProxyKind.HTTP -> httpProxy
+    ProxyKind.HTTPS -> httpsProxy
+    ProxyKind.SOCKS5 -> socks5Proxy
+    ProxyKind.NONE -> null
+}
 
 // One process-wide DataStore. The migration imports the P0 onboarding flag from
 // the legacy "adwarden" SharedPreferences file (matching key + type), so an
@@ -106,10 +124,9 @@ class SettingsRepository @Inject constructor(
             proxyKind = prefs[KEY_PROXY_KIND]
                 ?.let { runCatching { ProxyKind.valueOf(it) }.getOrNull() }
                 ?: ProxyKind.NONE,
-            proxyHost = prefs[KEY_PROXY_HOST] ?: "",
-            proxyPort = prefs[KEY_PROXY_PORT] ?: 0,
-            proxyUsername = prefs[KEY_PROXY_USERNAME] ?: "",
-            proxyPassword = prefs[KEY_PROXY_PASSWORD] ?: "",
+            httpProxy = readEndpoint(prefs, "http"),
+            httpsProxy = readEndpoint(prefs, "https"),
+            socks5Proxy = readEndpoint(prefs, "socks5"),
             proxyDnsOverTcp = prefs[KEY_PROXY_DNS_OVER_TCP] ?: false,
         )
     }
@@ -138,16 +155,19 @@ class SettingsRepository @Inject constructor(
     suspend fun setLiveTrafficMonitoring(value: Boolean) =
         store.edit { it[KEY_LIVE_TRAFFIC] = value }
 
-    /** Persist the whole proxy config in one edit, so a change fans out as a single
-     *  settings emission (one tunnel re-establish, not one per field). */
-    suspend fun setProxy(kind: ProxyKind, host: String, port: Int, username: String, password: String) =
-        store.edit {
-            it[KEY_PROXY_KIND] = kind.name
-            it[KEY_PROXY_HOST] = host.trim()
-            it[KEY_PROXY_PORT] = port
-            it[KEY_PROXY_USERNAME] = username
-            it[KEY_PROXY_PASSWORD] = password
+    /** Persist the active proxy kind and, when a type is selected, that type's
+     *  endpoint — in one edit (a single settings emission ⇒ one tunnel
+     *  re-establish). Each type is stored under its own keys, so switching kinds
+     *  keeps the others intact. */
+    suspend fun setProxy(kind: ProxyKind, endpoint: ProxyEndpoint) = store.edit { prefs ->
+        prefs[KEY_PROXY_KIND] = kind.name
+        endpointPrefix(kind)?.let { type ->
+            prefs[stringPreferencesKey("proxy_${type}_host")] = endpoint.host.trim()
+            prefs[intPreferencesKey("proxy_${type}_port")] = endpoint.port
+            prefs[stringPreferencesKey("proxy_${type}_username")] = endpoint.username
+            prefs[stringPreferencesKey("proxy_${type}_password")] = endpoint.password
         }
+    }
 
     suspend fun setProxyDnsOverTcp(value: Boolean) =
         store.edit { it[KEY_PROXY_DNS_OVER_TCP] = value }
@@ -165,10 +185,25 @@ class SettingsRepository @Inject constructor(
         val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")
         val KEY_LIVE_TRAFFIC = booleanPreferencesKey("live_traffic_monitoring")
         val KEY_PROXY_KIND = stringPreferencesKey("proxy_kind")
-        val KEY_PROXY_HOST = stringPreferencesKey("proxy_host")
-        val KEY_PROXY_PORT = intPreferencesKey("proxy_port")
-        val KEY_PROXY_USERNAME = stringPreferencesKey("proxy_username")
-        val KEY_PROXY_PASSWORD = stringPreferencesKey("proxy_password")
+        // Per-type proxy keys are `proxy_<type>_{host,port,username,password}`,
+        // built on demand from [endpointPrefix] / [readEndpoint].
         val KEY_PROXY_DNS_OVER_TCP = booleanPreferencesKey("proxy_dns_over_tcp")
     }
 }
+
+/** Storage prefix for a proxy type's per-type keys (`http`/`https`/`socks5`), or
+ *  null for [ProxyKind.NONE]. */
+private fun endpointPrefix(kind: ProxyKind): String? = when (kind) {
+    ProxyKind.HTTP -> "http"
+    ProxyKind.HTTPS -> "https"
+    ProxyKind.SOCKS5 -> "socks5"
+    ProxyKind.NONE -> null
+}
+
+/** Read one type's saved [ProxyEndpoint] from `proxy_<type>_*` keys. */
+private fun readEndpoint(prefs: Preferences, type: String) = ProxyEndpoint(
+    host = prefs[stringPreferencesKey("proxy_${type}_host")] ?: "",
+    port = prefs[intPreferencesKey("proxy_${type}_port")] ?: 0,
+    username = prefs[stringPreferencesKey("proxy_${type}_username")] ?: "",
+    password = prefs[stringPreferencesKey("proxy_${type}_password")] ?: "",
+)
