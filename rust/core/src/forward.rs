@@ -65,6 +65,11 @@ pub struct AppPolicy {
 const FIRST_DYNAMIC_TOKEN: usize = 16;
 const UDP_IDLE_MS: i64 = 60_000;
 const MAX_DATAGRAM: usize = 65_535;
+/// A proxy handshake (TCP CONNECT, HTTPS-proxy TLS, or SOCKS5 ASSOCIATE) that
+/// hasn't completed within this is failed closed — so a TLS ClientHello sent to a
+/// plaintext proxy port, or a black-holed proxy, errors quickly instead of hanging
+/// until the app or the 60s idle reap gives up (P5).
+const PROXY_HS_TIMEOUT_MS: i64 = 10_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpKey {
@@ -278,6 +283,9 @@ struct TcpUpstream {
     /// Deferred DoH classification state (P3). `Settled` for every flow except a
     /// 443 flow under Filter mode, which peeks the SNI before deciding.
     classify: Classify,
+    /// When the flow was opened (ms since `start`), used to fail a stuck proxy
+    /// handshake closed after [`PROXY_HS_TIMEOUT_MS`] (P5).
+    opened_ms: i64,
 }
 
 struct UdpSession {
@@ -419,9 +427,15 @@ pub struct Forwarder {
     /// When true, all forwarding fails closed (blocked) so nothing leaks around
     /// the intended proxy. Mutually exclusive with `proxy` being `Some`.
     proxy_broken: bool,
-    /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5); live-updatable.
-    /// No effect without an HTTP/HTTPS proxy (SOCKS5 uses UDP ASSOCIATE).
+    /// Route DNS through the proxy via DNS-over-TCP (P5); live-updatable. For an
+    /// HTTP/HTTPS proxy this replaces direct DNS; for a SOCKS5 proxy it replaces
+    /// UDP ASSOCIATE for DNS (non-DNS UDP still uses ASSOCIATE).
     proxy_dns_over_tcp: bool,
+    /// Learned at runtime: the configured SOCKS5 proxy refused/failed UDP
+    /// ASSOCIATE (most free SOCKS5 proxies are TCP-only). Once set, DNS falls back
+    /// to DNS-over-TCP through the proxy so name resolution keeps working — without
+    /// it, all DNS would fail closed. Reset on reconnect (a fresh `Forwarder`).
+    socks_udp_unsupported: bool,
     /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
     tls: Option<MitmConfigs>,
     /// Decrypted HTTP transactions captured this session, drained on HAR export.
@@ -480,6 +494,7 @@ impl Forwarder {
             proxy: proxy_active,
             proxy_broken,
             proxy_dns_over_tcp: config.proxy_dns_over_tcp,
+            socks_udp_unsupported: false,
             tls: build_tls_factory(config),
             har: Vec::new(),
             pinned: HashSet::new(),
@@ -879,11 +894,18 @@ impl Forwarder {
                     } else {
                         dgram.dst
                     };
-                    // A SOCKS5 proxy relays UDP via ASSOCIATE. For an HTTP/HTTPS
-                    // proxy, DNS goes over DNS-over-TCP through the proxy when that
-                    // switch is on (else direct). Everything else goes direct.
+                    // A SOCKS5 proxy relays UDP via ASSOCIATE — except DNS falls
+                    // back to DNS-over-TCP (CONNECT resolver:53) when the switch is
+                    // on or we've learned this proxy refuses ASSOCIATE, so DNS still
+                    // resolves on the many SOCKS5 proxies that are TCP-only. For an
+                    // HTTP/HTTPS proxy, DNS goes over DNS-over-TCP when the switch is
+                    // on (else direct). Everything else goes direct.
                     if proxy_udp == Some(true) {
-                        self.forward_udp_socks(dgram, upstream, env, bridge);
+                        if is_dns && (self.proxy_dns_over_tcp || self.socks_udp_unsupported) {
+                            self.forward_dns_over_proxy(dgram, upstream, env, bridge);
+                        } else {
+                            self.forward_udp_socks(dgram, upstream, env, bridge);
+                        }
                     } else if is_dns && self.proxy.is_some() && self.proxy_dns_over_tcp {
                         self.forward_dns_over_proxy(dgram, upstream, env, bridge);
                     } else {
@@ -1014,6 +1036,7 @@ impl Forwarder {
         self.reap_udp(now);
         self.reap_socks(now);
         self.reap_dns_tcp(now);
+        self.reap_proxy_handshakes(now, batcher);
         self.drain_stack_outbound();
     }
 
@@ -1140,6 +1163,7 @@ impl Forwarder {
                         cosmetic_set: false,
                         sni_reported: false,
                         classify,
+                        opened_ms: self.now_ms(),
                     },
                 );
             }
@@ -1917,7 +1941,13 @@ impl Forwarder {
         };
         match progress {
             CtrlStep::Pending => {}
-            CtrlStep::Failed => self.teardown_socks(key),
+            CtrlStep::Failed => {
+                // The proxy refused/failed ASSOCIATE (most free SOCKS5 proxies are
+                // TCP-only). Remember it so DNS falls back to DNS-over-TCP through
+                // the proxy instead of failing closed forever.
+                self.socks_udp_unsupported = true;
+                self.teardown_socks(key);
+            }
             CtrlStep::Ready(bound) => self.socks_associate_ready(key, bound),
         }
     }
@@ -2005,6 +2035,37 @@ impl Forwarder {
             .map(|(k, _)| *k)
             .collect();
         for key in stale {
+            self.teardown_socks(key);
+        }
+    }
+
+    /// Fail closed any proxy handshake still unfinished past [`PROXY_HS_TIMEOUT_MS`]
+    /// (P5). Without this a handshake that never completes — a TLS ClientHello to a
+    /// plaintext proxy port, or a black-holed proxy — would hang the flow until the
+    /// app or the 60s idle reap gives up. Direct (non-proxy) flows have no
+    /// handshake, so they are untouched.
+    fn reap_proxy_handshakes(&mut self, now: i64, batcher: &mut Batcher) {
+        let stuck: Vec<FlowId> = self
+            .tcp
+            .iter()
+            .filter(|(_, up)| up.handshake.is_some() && now - up.opened_ms > PROXY_HS_TIMEOUT_MS)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stuck {
+            crate::alog!("proxy handshake timed out ({PROXY_HS_TIMEOUT_MS}ms); failing closed");
+            self.fail_proxy(id, batcher);
+        }
+        // A SOCKS5 ASSOCIATE that never completes: tear it down and fall back to
+        // DNS-over-TCP for later DNS, like an explicit ASSOCIATE refusal.
+        let stuck_socks: Vec<UdpKey> = self
+            .socks_udp
+            .iter()
+            .filter(|(_, s)| s.handshake.is_some() && now - s.last_used_ms > PROXY_HS_TIMEOUT_MS)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in stuck_socks {
+            crate::alog!("SOCKS5 UDP associate timed out; falling back to DNS-over-TCP");
+            self.socks_udp_unsupported = true;
             self.teardown_socks(key);
         }
     }
