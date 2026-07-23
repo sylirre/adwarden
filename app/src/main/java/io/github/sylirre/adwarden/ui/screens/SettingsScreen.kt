@@ -379,6 +379,24 @@ private fun ProxySection(
         Spacer(Modifier.height(10.dp))
         ProxyKindPicker(selected = kind, onSelect = { kind = it })
 
+        // Type-specific guidance. The HTTPS hint in particular steers users away
+        // from the common trap of picking HTTPS for a plaintext proxy (most
+        // "HTTPS" proxy lists are plaintext HTTP proxies).
+        val hint = when (kind) {
+            ProxyKind.HTTP -> R.string.settings_proxy_hint_http
+            ProxyKind.HTTPS -> R.string.settings_proxy_hint_https
+            ProxyKind.SOCKS5 -> R.string.settings_proxy_hint_socks5
+            ProxyKind.NONE -> null
+        }
+        if (hint != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         if (kind != ProxyKind.NONE) {
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
