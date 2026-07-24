@@ -15,6 +15,7 @@ mod config;
 mod event;
 mod ffi;
 mod forward;
+mod http_forward;
 mod proxy;
 mod runtime;
 

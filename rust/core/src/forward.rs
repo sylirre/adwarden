@@ -30,9 +30,11 @@ use adwarden_tls::{peek_sni, write_har, DnsKind, HttpTransaction, MitmConfigs, S
 use crate::bridge::Bridge;
 use crate::config::{Config, EncryptedDnsMode};
 use crate::event::{Batcher, Event};
-use crate::proxy::{self, Handshake, Proxy, Step as ProxyStep};
+use crate::http_forward::HttpForward;
+use crate::proxy::{self, Handshake, Proxy, ProxyKind, Step as ProxyStep};
 
 const DOT_PORT: u16 = 853;
+const HTTP_PORT: u16 = 80;
 const HTTPS_PORT: u16 = 443;
 const PROTO_TCP: i32 = 6;
 const PROTO_UDP: i32 = 17;
@@ -286,6 +288,10 @@ struct TcpUpstream {
     /// When the flow was opened (ms since `start`), used to fail a stuck proxy
     /// handshake closed after [`PROXY_HS_TIMEOUT_MS`] (P5).
     opened_ms: i64,
+    /// Absolute-URI request rewriter for a plaintext :80 flow forwarded through an
+    /// HTTP/HTTPS proxy that refuses CONNECT :80 (P5). When `Some`, app->proxy
+    /// bytes are rewritten instead of relayed raw; there is no CONNECT handshake.
+    http_forward: Option<HttpForward>,
 }
 
 struct UdpSession {
@@ -394,6 +400,12 @@ pub struct ForwarderStats {
     pub pinned: u64,
     pub proxy_ok: u64,
     pub proxy_fail: u64,
+    /// Flows/datagrams dropped because a configured proxy couldn't carry them and
+    /// leaking around it isn't allowed (P5): a broken/unresolvable proxy, or UDP an
+    /// HTTP/HTTPS proxy can't tunnel. Distinct from `blocked` (firewall) and
+    /// `proxy_fail` (handshake failures) so "the proxy is dropping traffic" is
+    /// visible in the heartbeat.
+    pub fail_closed: u64,
 }
 
 pub struct Forwarder {
@@ -436,6 +448,11 @@ pub struct Forwarder {
     /// to DNS-over-TCP through the proxy so name resolution keeps working — without
     /// it, all DNS would fail closed. Reset on reconnect (a fresh `Forwarder`).
     socks_udp_unsupported: bool,
+    /// Learned at runtime: the configured HTTP/HTTPS proxy refused `CONNECT` to
+    /// port 80 (standard forward proxies only allow CONNECT to 443). Once set,
+    /// plaintext :80 flows are forwarded in absolute-URI form instead of CONNECT
+    /// so plain-HTTP sites keep working. Reset on reconnect (a fresh `Forwarder`).
+    http_forward_80: bool,
     /// Prebuilt rustls configs; `Some` when TLS interception is on (P2).
     tls: Option<MitmConfigs>,
     /// Decrypted HTTP transactions captured this session, drained on HAR export.
@@ -495,6 +512,7 @@ impl Forwarder {
             proxy_broken,
             proxy_dns_over_tcp: config.proxy_dns_over_tcp,
             socks_udp_unsupported: false,
+            http_forward_80: false,
             tls: build_tls_factory(config),
             har: Vec::new(),
             pinned: HashSet::new(),
@@ -798,6 +816,7 @@ impl Forwarder {
                     if let Some(rst) = reset_for_syn(packet) {
                         self.outbox.push(rst);
                     }
+                    self.stats.fail_closed += 1;
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
@@ -844,6 +863,7 @@ impl Forwarder {
                 // Fail closed: a configured-but-unusable proxy (P5) drops all UDP
                 // (incl. DNS) rather than leaking around it.
                 if self.proxy_broken {
+                    self.stats.fail_closed += 1;
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
@@ -855,6 +875,7 @@ impl Forwarder {
                 let proxy_udp = self.proxy.as_ref().map(|p| p.supports_udp());
                 let is_dns = decoded.dst_port == 53 || decoded.dst_port == 5353;
                 if proxy_udp == Some(false) && !is_dns {
+                    self.stats.fail_closed += 1;
                     batcher.push(Event::blocked(&decoded).with_uid(verdict.uid));
                     return;
                 }
@@ -1003,6 +1024,27 @@ impl Forwarder {
                 // Always drive: handshakes and buffered plaintext make progress
                 // even when the app sent nothing this pass.
                 self.drive_mitm(id, batcher);
+            } else if !data.is_empty()
+                && self.tcp.get(&id).map_or(false, |up| up.http_forward.is_some())
+            {
+                // Absolute-URI forwarding (:80 through an HTTP/HTTPS proxy):
+                // rewrite each request-line before relaying. A parse anomaly fails
+                // the flow closed rather than forwarding something malformed.
+                let rewritten = self
+                    .tcp
+                    .get_mut(&id)
+                    .and_then(|up| up.http_forward.as_mut().map(|hf| hf.push(&data)));
+                match rewritten {
+                    Some(Ok(bytes)) => {
+                        if let Some(up) = self.tcp.get_mut(&id) {
+                            up.to_upstream.extend_from_slice(&bytes);
+                        }
+                    }
+                    _ => {
+                        self.fail_proxy(id, batcher);
+                        continue;
+                    }
+                }
             } else if !data.is_empty() {
                 // Raw relay. While the live log is open, passively peek the SNI so
                 // the traffic view can name an otherwise IP-only HTTPS flow. The
@@ -1141,9 +1183,27 @@ impl Forwarder {
         match self.connect_tcp(server, env, bridge) {
             Some((io, token)) => {
                 self.stats.tcp_new += 1;
-                // With a proxy, dial through it: attach a handshake targeting the
-                // real `server`, run before any relay/MITM begins.
-                let handshake = self.proxy.as_ref().map(|p| Handshake::connect(p, server));
+                // For a plaintext :80 flow through an HTTP/HTTPS proxy we've learned
+                // refuses CONNECT :80, forward in absolute-URI form (no CONNECT
+                // handshake) so plain-HTTP sites work through standard proxies.
+                let http_forward = if self.http_forward_80
+                    && server.port() == HTTP_PORT
+                    && self
+                        .proxy
+                        .as_ref()
+                        .map_or(false, |p| matches!(p.kind, ProxyKind::Http | ProxyKind::Https))
+                {
+                    Some(HttpForward::new(origin_authority(server)))
+                } else {
+                    None
+                };
+                // With a proxy (and not absolute-URI forwarding), dial through it:
+                // attach a handshake targeting the real `server`, run before relay.
+                let handshake = if http_forward.is_some() {
+                    None
+                } else {
+                    self.proxy.as_ref().map(|p| Handshake::connect(p, server))
+                };
                 self.routes.insert(token, Route::Tcp(id));
                 self.tcp.insert(
                     id,
@@ -1164,6 +1224,7 @@ impl Forwarder {
                         sni_reported: false,
                         classify,
                         opened_ms: self.now_ms(),
+                        http_forward,
                     },
                 );
             }
@@ -1457,7 +1518,17 @@ impl Forwarder {
                     return; // relay/MITM resumes on the next service pass
                 }
                 Err(e) => {
-                    crate::alog!("proxy handshake failed: {e}");
+                    // A standard forward proxy refuses CONNECT to :80 (it wants
+                    // absolute-URI HTTP instead). Learn it so subsequent :80 flows
+                    // forward that way; this one fails closed and the app retries.
+                    if matches!(e, proxy::ProxyError::HttpStatus(_))
+                        && self.tcp.get(&id).map_or(false, |up| up.server.port() == HTTP_PORT)
+                    {
+                        crate::alog!("proxy refused CONNECT :80 ({e}); switching :80 to absolute-URI");
+                        self.http_forward_80 = true;
+                    } else {
+                        crate::alog!("proxy handshake failed: {e}");
+                    }
                     return self.fail_proxy(id, batcher);
                 }
             }
@@ -2485,6 +2556,21 @@ fn build_proxy(config: &Config) -> (Option<Proxy>, bool) {
     // Configured but unusable: fail closed rather than leak around the proxy.
     crate::alog!("proxy configured but address unresolved/invalid; blocking (fail closed)");
     (None, true)
+}
+
+/// The origin authority (`host[:port]`) for an absolute-URI fallback when a
+/// forwarded :80 request omits `Host` (HTTP/1.0). IPv6 is bracketed; the default
+/// HTTP port is elided.
+fn origin_authority(addr: SocketAddr) -> String {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    if addr.port() == HTTP_PORT {
+        host
+    } else {
+        format!("{host}:{}", addr.port())
+    }
 }
 
 /// Pick the first IPv4 and IPv6 upstream resolvers from the config, falling back

@@ -215,10 +215,10 @@ fn run_loop(
             crate::alog!(
                 "hb tun_in={} tcp_new={} udp_new={} protect_ok={} protect_fail={} connect_fail={} \
                  reply={} out={} uid_lookups={} blocked={} mitm={} pinned={} proxy_ok={} proxy_fail={} \
-                 har={} flows(tcp={},udp={})",
+                 fail_closed={} har={} flows(tcp={},udp={})",
                 s.tun_in, s.tcp_new, s.udp_new, s.protect_ok, s.protect_fail, s.connect_fail,
                 s.upstream_reply, s.out_written, s.uid_lookups, s.blocked, s.mitm_new,
-                s.pinned, s.proxy_ok, s.proxy_fail, forwarder.har_len(), tcp_flows, udp_flows,
+                s.pinned, s.proxy_ok, s.proxy_fail, s.fail_closed, forwarder.har_len(), tcp_flows, udp_flows,
             );
             last_heartbeat = Instant::now();
         }
