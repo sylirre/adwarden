@@ -130,9 +130,15 @@
     <string name="settings_encrypted_dns_block_sub">Deny DoT/DoH so queries fall back to plaintext we can filter.</string>
     <string name="settings_encrypted_dns_filter_sub">Decrypt DoT/DoH and apply the blocklist to the queries inside. Needs the Adwarden CA installed; flows we can\'t decrypt (pinned apps, Private DNS strict, QUIC) are blocked instead.</string>
     <string name="settings_dns_upstream">Upstream DNS server</string>
-    <string name="settings_dns_upstream_hint">Where allowed lookups are forwarded. Leave blank for the default (1.1.1.1). Enter an IP address (not a hostname) — an IPv4 address is safest unless your network has IPv6. Plaintext DNS only; a custom port lets you point at a self-hosted resolver.</string>
+    <string name="settings_dns_upstream_hint">Where allowed lookups are forwarded. Plain sends cleartext to an IP (blank = the default 1.1.1.1); DoT and DoH encrypt lookups to a named resolver — pick a preset or enter your own. A misconfigured or unreachable encrypted resolver blocks DNS rather than falling back to cleartext.</string>
     <string name="settings_dns_server">DNS server</string>
     <string name="settings_dns_port">Port</string>
+    <string name="settings_dns_transport_plain">Plain</string>
+    <string name="settings_dns_transport_dot">DoT</string>
+    <string name="settings_dns_transport_doh">DoH</string>
+    <string name="settings_dns_dot_host">Resolver hostname</string>
+    <string name="settings_dns_doh_url">Resolver URL</string>
+    <string name="settings_dns_presets">Presets</string>
     <string name="settings_dns_apply">Apply</string>
     <string name="settings_limitation">Limitation</string>
     <string name="settings_limitation_body">Filtering encrypted DNS requires the Adwarden CA. Android Private DNS in strict mode validates the system trust store and can\'t be decrypted, so it is blocked rather than filtered.</string>
@@ -161,10 +167,10 @@
     <string name="settings_proxy_hint_http">Plaintext connection to the proxy, which tunnels traffic with CONNECT. Use this for most proxies — including lists labelled \"HTTPS\", whose entries are usually plaintext HTTP proxies.</string>
     <string name="settings_proxy_hint_https">Connects to the proxy itself over TLS — only for proxies that terminate TLS (uncommon), with a publicly-trusted certificate matching the host. Most \"HTTPS\" proxy lists are actually plaintext: use HTTP for those.</string>
     <string name="settings_proxy_hint_socks5">SOCKS5 with optional login. Carries DNS and other UDP (e.g. QUIC) too; if the proxy doesn\'t support UDP, DNS falls back to TCP automatically.</string>
-    <string name="settings_proxy_dns">Resolve DNS through the proxy</string>
-    <string name="settings_proxy_dns_sub">Off by default. Routes DNS lookups through the proxy over TCP (CONNECT to the resolver\'s port, 53) so they don\'t leak around it — the proxy must allow that, which some refuse. Adds a little latency per lookup. SOCKS5 proxies normally carry DNS themselves and switch to this automatically if they can\'t.</string>
+    <string name="settings_proxy_dns">Route DNS through the proxy</string>
+    <string name="settings_proxy_dns_sub">Off by default. When off, DNS goes directly to the resolver (using the transport above — plain, DoT or DoH), even while a proxy carries your other traffic. When on, DNS rides the proxy instead: a SOCKS5 proxy carries it (falling back to TCP if it refuses UDP), an HTTP/HTTPS proxy over TCP (CONNECT to the resolver\'s port, which some refuse). Routing through the proxy uses plain DNS, not DoT/DoH.</string>
     <string name="settings_proxy_note">How forwarding works</string>
-    <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. A SOCKS5 proxy also carries DNS and other UDP (e.g. QUIC); if it doesn\'t support UDP, DNS falls back to TCP automatically. An HTTP/HTTPS proxy can\'t carry UDP, so UDP apps fall back to TCP and DNS follows the switch above. Changing the host/type/port reconnects the VPN.</string>
+    <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. Non-DNS UDP (e.g. QUIC) goes through a SOCKS5 proxy, or is dropped for an HTTP/HTTPS proxy so apps fall back to TCP. DNS follows the switch above, independent of the proxy. Changing the host/type/port reconnects the VPN.</string>
     <string name="settings_system_integration">System integration</string>
     <string name="settings_always_on">Always-on VPN</string>
     <string name="settings_always_on_sub">Open Android\'s VPN settings to keep Adwarden always connected, and optionally block traffic while it\'s off (lockdown).</string>

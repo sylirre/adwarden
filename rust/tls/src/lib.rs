@@ -71,6 +71,14 @@ pub fn upstream_client_config_alpn(
     Ok(Arc::new(config))
 }
 
+/// Build an HTTP/1.1 `POST` request that carries a DNS wire-format query to a DoH
+/// resolver (`application/dns-message`, RFC 8484). Reused by the P6 DoH upstream
+/// client. `host` is the `Host` header/authority; `path` the request path
+/// (defaults to `/dns-query` when empty).
+pub fn doh_request(host: &str, path: &str, wire: &[u8]) -> Vec<u8> {
+    dns::post_wire(host, path, wire)
+}
+
 /// The rustls configs needed to intercept flows, bundled so callers (the native
 /// core) don't depend on rustls directly. Build once per session from the CA
 /// PEMs; cheap to mint a per-flow splice from.

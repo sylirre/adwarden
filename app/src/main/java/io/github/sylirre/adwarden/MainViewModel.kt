@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.StatsRepository
+import io.github.sylirre.adwarden.data.settings.AppSettings
+import io.github.sylirre.adwarden.data.settings.DnsTransport
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
@@ -50,11 +52,25 @@ data class ProxyUiState(
     }
 }
 
-/** Snapshot of the custom upstream DNS setting for the settings form (P6). A blank
- *  [server] means the built-in default resolver; [port] defaults to 53. */
+/** Snapshot of the custom upstream DNS setting for the settings form (P6). Carries
+ *  every transport's fields so the form can switch between plain / DoT / DoH without
+ *  losing the others. A blank plain [server] means the built-in default resolver. */
 data class CustomDnsUiState(
+    val transport: DnsTransport = DnsTransport.PLAIN,
     val server: String = "",
     val port: Int = 53,
+    val dotHost: String = "",
+    val dotPort: Int = 853,
+    val dohUrl: String = "",
+)
+
+private fun AppSettings.toCustomDnsUiState() = CustomDnsUiState(
+    transport = dnsTransport,
+    server = dnsServer,
+    port = dnsPort,
+    dotHost = dnsDotHost,
+    dotPort = dnsDotPort,
+    dohUrl = dnsDohUrl,
 )
 
 @HiltViewModel
@@ -92,8 +108,8 @@ class MainViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.interceptTls)
 
     val customDns: StateFlow<CustomDnsUiState> = settings.settings
-        .map { CustomDnsUiState(it.dnsServer, it.dnsPort) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, CustomDnsUiState(initial.dnsServer, initial.dnsPort))
+        .map { it.toCustomDnsUiState() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initial.toCustomDnsUiState())
 
     val cosmeticElementHiding: StateFlow<Boolean> = settings.settings
         .map { it.cosmeticElementHiding }
@@ -189,9 +205,13 @@ class MainViewModel @Inject constructor(
     }
 
     /** Persist the custom upstream resolver (P6). Applied live by the VpnService
-     *  config observer — no reconnect. A blank [server] restores the default. */
-    fun setCustomDns(server: String, port: Int) {
-        viewModelScope.launch { settings.setCustomDns(server, port) }
+     *  config observer — no reconnect. */
+    fun setCustomDns(dns: CustomDnsUiState) {
+        viewModelScope.launch {
+            settings.setCustomDns(
+                dns.transport, dns.server, dns.port, dns.dotHost, dns.dotPort, dns.dohUrl,
+            )
+        }
     }
 
     fun setCosmeticElementHiding(value: Boolean) {

@@ -50,6 +50,16 @@ data class ProxyEndpoint(
  */
 enum class EncryptedDnsMode { OFF, BLOCK, FILTER }
 
+/**
+ * Transport used to reach the *upstream* resolver for allowed DNS (P6).
+ *  - PLAIN: cleartext Do53 (an IP + port).
+ *  - DOT: DNS-over-TLS to a named resolver (RFC 7858).
+ *  - DOH: DNS-over-HTTPS to a resolver URL (RFC 8484).
+ * Serialized to the native config JSON as the lowercase [name] (`plain`/`dot`/`doh`),
+ * matching the Rust `DnsTransport`. Orthogonal to [EncryptedDnsMode].
+ */
+enum class DnsTransport { PLAIN, DOT, DOH }
+
 /** User preferences persisted to a Preferences DataStore. */
 data class AppSettings(
     val onboarded: Boolean = false,
@@ -57,12 +67,18 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val encryptedDnsMode: EncryptedDnsMode = EncryptedDnsMode.OFF,
     val interceptTls: Boolean = false,
-    /** Custom upstream resolver (P6). Blank ⇒ the built-in default (1.1.1.1). A
-     *  single IP literal (v4 or v6); the datapath forwards all allowed DNS here.
-     *  [dnsPort] lets users reach a self-hosted resolver on a non-standard port.
-     *  Applied live (no reconnect) via nativeUpdateConfig. */
+    /** Custom upstream resolver (P6), applied live via nativeUpdateConfig.
+     *  [dnsTransport] selects the transport; each transport keeps its own fields so
+     *  switching doesn't lose the others.
+     *  - PLAIN: [dnsServer] (blank ⇒ built-in default 1.1.1.1) + [dnsPort].
+     *  - DOT: [dnsDotHost] (resolver hostname) + [dnsDotPort] (853).
+     *  - DOH: [dnsDohUrl] (e.g. https://cloudflare-dns.com/dns-query). */
+    val dnsTransport: DnsTransport = DnsTransport.PLAIN,
     val dnsServer: String = "",
     val dnsPort: Int = 53,
+    val dnsDotHost: String = "",
+    val dnsDotPort: Int = 853,
+    val dnsDohUrl: String = "",
     /** The user's intended protection state, persisted across process death so the
      *  Quick Settings tile and boot/always-on reasoning know what was asked (P3-5).
      *  This is intent, not the live running state (that's NativeSessionHolder). */
@@ -123,8 +139,14 @@ class SettingsRepository @Inject constructor(
                 ?.let { runCatching { EncryptedDnsMode.valueOf(it) }.getOrNull() }
                 ?: if (prefs[KEY_BLOCK_ENCRYPTED_DNS] == true) EncryptedDnsMode.BLOCK else EncryptedDnsMode.OFF,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
+            dnsTransport = prefs[KEY_DNS_TRANSPORT]
+                ?.let { runCatching { DnsTransport.valueOf(it) }.getOrNull() }
+                ?: DnsTransport.PLAIN,
             dnsServer = prefs[KEY_DNS_SERVER] ?: "",
             dnsPort = prefs[KEY_DNS_PORT]?.takeIf { it in 1..65535 } ?: 53,
+            dnsDotHost = prefs[KEY_DNS_DOT_HOST] ?: "",
+            dnsDotPort = prefs[KEY_DNS_DOT_PORT]?.takeIf { it in 1..65535 } ?: 853,
+            dnsDohUrl = prefs[KEY_DNS_DOH_URL] ?: "",
             desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
             cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
             cosmeticScriptlets = prefs[KEY_COSMETIC_SCRIPTLETS] ?: false,
@@ -152,11 +174,24 @@ class SettingsRepository @Inject constructor(
         store.edit { it[KEY_INTERCEPT_TLS] = value }
 
     /** Persist the custom upstream resolver (P6) in one edit ⇒ one settings
-     *  emission ⇒ one live config push. A blank [server] clears the override
-     *  (back to the default resolver); [port] is expected pre-validated (1..65535). */
-    suspend fun setCustomDns(server: String, port: Int) = store.edit {
+     *  emission ⇒ one live config push. Stores the transport plus every transport's
+     *  fields so switching between plain/DoT/DoH never loses the others. A blank
+     *  plain [server] clears the override (back to the default resolver). Ports are
+     *  expected pre-validated (1..65535). */
+    suspend fun setCustomDns(
+        transport: DnsTransport,
+        server: String,
+        port: Int,
+        dotHost: String,
+        dotPort: Int,
+        dohUrl: String,
+    ) = store.edit {
+        it[KEY_DNS_TRANSPORT] = transport.name
         it[KEY_DNS_SERVER] = server.trim()
         it[KEY_DNS_PORT] = port
+        it[KEY_DNS_DOT_HOST] = dotHost.trim()
+        it[KEY_DNS_DOT_PORT] = dotPort
+        it[KEY_DNS_DOH_URL] = dohUrl.trim()
     }
 
     suspend fun setDesiredProtection(value: Boolean) =
@@ -196,8 +231,12 @@ class SettingsRepository @Inject constructor(
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
         val KEY_ENCRYPTED_DNS_MODE = stringPreferencesKey("encrypted_dns_mode")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
+        val KEY_DNS_TRANSPORT = stringPreferencesKey("dns_transport")
         val KEY_DNS_SERVER = stringPreferencesKey("dns_server")
         val KEY_DNS_PORT = intPreferencesKey("dns_port")
+        val KEY_DNS_DOT_HOST = stringPreferencesKey("dns_dot_host")
+        val KEY_DNS_DOT_PORT = intPreferencesKey("dns_dot_port")
+        val KEY_DNS_DOH_URL = stringPreferencesKey("dns_doh_url")
         val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
         val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")
         val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")

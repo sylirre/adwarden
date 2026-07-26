@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -60,6 +61,7 @@ import io.github.sylirre.adwarden.CustomDnsUiState
 import io.github.sylirre.adwarden.MainViewModel
 import io.github.sylirre.adwarden.ProxyUiState
 import io.github.sylirre.adwarden.R
+import io.github.sylirre.adwarden.data.settings.DnsTransport
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
@@ -357,19 +359,37 @@ private fun EncryptedDnsPicker(selected: EncryptedDnsMode, onSelect: (EncryptedD
     }
 }
 
+/** Known-good DoT/DoH providers used to prefill the form. The matching bootstrap
+ *  IPs live in AdwardenVpnService (keyed by these same hostnames), so a preset needs
+ *  no name lookup. */
+private data class DnsPreset(val label: String, val dotHost: String, val dohUrl: String)
+
+private val DNS_PRESETS = listOf(
+    DnsPreset("Cloudflare", "cloudflare-dns.com", "https://cloudflare-dns.com/dns-query"),
+    DnsPreset("Google", "dns.google", "https://dns.google/dns-query"),
+    DnsPreset("Quad9", "dns.quad9.net", "https://dns.quad9.net/dns-query"),
+    DnsPreset("AdGuard", "dns.adguard-dns.com", "https://dns.adguard-dns.com/dns-query"),
+)
+
 /**
- * Custom upstream resolver form (P6): a single DNS server (IP literal) + a port,
- * with an Apply button that persists both. A blank server clears the override
- * back to the built-in default. The change is pushed live (no VPN reconnect).
+ * Custom upstream resolver form (P6): a Plain / DoT / DoH transport picker with
+ * transport-specific fields — Plain takes an IP + port, DoT a resolver hostname +
+ * port, DoH a resolver URL — plus provider presets for DoT/DoH. Apply persists the
+ * whole state (each transport's fields are kept) and the change is pushed live (no
+ * VPN reconnect).
  */
 @Composable
 private fun CustomDnsSection(
     dns: CustomDnsUiState,
-    onApply: (String, Int) -> Unit,
+    onApply: (CustomDnsUiState) -> Unit,
 ) {
     // Re-seed the fields whenever the saved value changes (e.g. after Apply).
+    var transport by remember(dns) { mutableStateOf(dns.transport) }
     var server by remember(dns) { mutableStateOf(dns.server) }
     var port by remember(dns) { mutableStateOf(if (dns.port in 1..65535) dns.port.toString() else "53") }
+    var dotHost by remember(dns) { mutableStateOf(dns.dotHost) }
+    var dotPort by remember(dns) { mutableStateOf(if (dns.dotPort in 1..65535) dns.dotPort.toString() else "853") }
+    var dohUrl by remember(dns) { mutableStateOf(dns.dohUrl) }
 
     Column(
         Modifier
@@ -388,40 +408,155 @@ private fun CustomDnsSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = server,
-                onValueChange = { server = it },
-                label = { Text(stringResource(R.string.settings_dns_server)) },
-                placeholder = { Text("1.1.1.1") },
-                singleLine = true,
-                modifier = Modifier.weight(2f),
-            )
-            OutlinedTextField(
-                value = port,
-                onValueChange = { new -> port = new.filter { it.isDigit() }.take(5) },
-                label = { Text(stringResource(R.string.settings_dns_port)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f),
-            )
+        DnsTransportPicker(selected = transport, onSelect = { transport = it })
+        Spacer(Modifier.height(12.dp))
+
+        when (transport) {
+            DnsTransport.PLAIN -> {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = server,
+                        onValueChange = { server = it },
+                        label = { Text(stringResource(R.string.settings_dns_server)) },
+                        placeholder = { Text("1.1.1.1") },
+                        singleLine = true,
+                        modifier = Modifier.weight(2f),
+                    )
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { new -> port = new.filter { it.isDigit() }.take(5) },
+                        label = { Text(stringResource(R.string.settings_dns_port)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            DnsTransport.DOT -> {
+                DnsPresetRow { dotHost = it.dotHost; dotPort = "853" }
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = dotHost,
+                        onValueChange = { dotHost = it },
+                        label = { Text(stringResource(R.string.settings_dns_dot_host)) },
+                        placeholder = { Text("dns.google") },
+                        singleLine = true,
+                        modifier = Modifier.weight(2f),
+                    )
+                    OutlinedTextField(
+                        value = dotPort,
+                        onValueChange = { new -> dotPort = new.filter { it.isDigit() }.take(5) },
+                        label = { Text(stringResource(R.string.settings_dns_port)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            DnsTransport.DOH -> {
+                DnsPresetRow { dohUrl = it.dohUrl }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = dohUrl,
+                    onValueChange = { dohUrl = it },
+                    label = { Text(stringResource(R.string.settings_dns_doh_url)) },
+                    placeholder = { Text("https://dns.google/dns-query") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
         Spacer(Modifier.height(12.dp))
-        val trimmed = server.trim()
-        val portNum = port.toIntOrNull() ?: 0
-        // Blank server ⇒ the default resolver (valid). Otherwise require a numeric
-        // IP literal (v4/v6) — hostnames aren't accepted (a resolver's name can't be
-        // looked up without a resolver). Port must be in range.
-        val serverValid = trimmed.isEmpty() || InetAddresses.isNumericAddress(trimmed)
-        val valid = serverValid && portNum in 1..65535
-        val dirty = trimmed != dns.server || portNum != dns.port
+        val edited = CustomDnsUiState(
+            transport = transport,
+            server = server.trim(),
+            port = port.toIntOrNull() ?: 0,
+            dotHost = dotHost.trim(),
+            dotPort = dotPort.toIntOrNull() ?: 0,
+            dohUrl = dohUrl.trim(),
+        )
+        // Plain: blank IP ⇒ default (valid), else a numeric IP literal; DoT: a
+        // non-blank hostname; DoH: an https URL. Ports must be in range.
+        val valid = when (transport) {
+            DnsTransport.PLAIN ->
+                (edited.server.isEmpty() || InetAddresses.isNumericAddress(edited.server)) &&
+                    edited.port in 1..65535
+            DnsTransport.DOT -> edited.dotHost.isNotEmpty() && edited.dotPort in 1..65535
+            DnsTransport.DOH ->
+                edited.dohUrl.startsWith("https://") && edited.dohUrl.length > "https://".length
+        }
+        val dirty = edited != dns
         Button(
-            onClick = { onApply(trimmed, portNum) },
+            onClick = { onApply(edited) },
             enabled = valid && dirty,
             modifier = Modifier.align(Alignment.End),
         ) {
             Text(stringResource(R.string.settings_dns_apply))
+        }
+    }
+}
+
+/** Three-way Plain / DoT / DoH transport selector (segmented, radio semantics). */
+@Composable
+private fun DnsTransportPicker(selected: DnsTransport, onSelect: (DnsTransport) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        DnsTransport.entries.forEach { t ->
+            val label = when (t) {
+                DnsTransport.PLAIN -> stringResource(R.string.settings_dns_transport_plain)
+                DnsTransport.DOT -> stringResource(R.string.settings_dns_transport_dot)
+                DnsTransport.DOH -> stringResource(R.string.settings_dns_transport_doh)
+            }
+            val chosen = t == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(AdwShapes.Field)
+                    .background(if (chosen) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                    .border(
+                        1.dp,
+                        if (chosen) Color.Transparent else MaterialTheme.colorScheme.outlineVariant,
+                        AdwShapes.Field,
+                    )
+                    .selectable(selected = chosen, role = Role.RadioButton) { onSelect(t) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (chosen) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** A horizontally-scrollable row of provider preset chips that prefill the form. */
+@Composable
+private fun DnsPresetRow(onPick: (DnsPreset) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        DNS_PRESETS.forEach { preset ->
+            Box(
+                Modifier
+                    .clip(AdwShapes.Field)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, AdwShapes.Field)
+                    .clickable { onPick(preset) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    preset.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

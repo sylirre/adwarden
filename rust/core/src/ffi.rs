@@ -165,8 +165,11 @@ pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpd
             });
             session.send(Command::SetProxyDns(parsed.proxy_dns_over_tcp));
             session.send(Command::SetDnsUpstream {
+                transport: parsed.dns_transport,
                 override_ip: parse_dns_override(&parsed.dns_servers),
                 port: parsed.dns_port,
+                host: parsed.dns_host.clone(),
+                path: parsed.dns_path.clone(),
             });
         }
     }));

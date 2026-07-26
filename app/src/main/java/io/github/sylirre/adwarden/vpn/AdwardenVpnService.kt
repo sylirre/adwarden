@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.net.Uri
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -33,6 +34,8 @@ import io.github.sylirre.adwarden.data.CaptureRepository
 import io.github.sylirre.adwarden.data.CaRepository
 import io.github.sylirre.adwarden.data.FilterRepository
 import io.github.sylirre.adwarden.data.StatsRepository
+import io.github.sylirre.adwarden.data.settings.AppSettings
+import io.github.sylirre.adwarden.data.settings.DnsTransport
 import io.github.sylirre.adwarden.data.settings.EncryptedDnsMode
 import io.github.sylirre.adwarden.data.settings.ProxyEndpoint
 import io.github.sylirre.adwarden.data.settings.ProxyKind
@@ -50,6 +53,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.net.InetAddress
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -361,25 +366,22 @@ class AdwardenVpnService : VpnService() {
                 .map {
                     LiveConfig(
                         it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets,
-                        it.proxyDnsOverTcp, it.dnsServer, it.dnsPort,
+                        it.proxyDnsOverTcp, dnsCfgOf(it),
                     )
                 }
                 .distinctUntilChanged()
                 .collect { c ->
                     val handle = nativeHandle
-                    if (handle != 0L) {
-                        NativeCore.nativeUpdateConfig(
-                            handle,
-                            JSONObject()
-                                .put("encrypted_dns_mode", c.encryptedDnsMode.name.lowercase())
-                                .put("cosmetic_element_hiding", c.hiding)
-                                .put("cosmetic_scriptlets", c.scriptlets)
-                                .put("proxy_dns_over_tcp", c.proxyDnsOverTcp)
-                                .put("dns_servers", upstreamDnsJson(c.dnsServer))
-                                .put("dns_port", dnsPort(c.dnsPort))
-                                .toString(),
-                        )
-                    }
+                    if (handle == 0L) return@collect
+                    val json = JSONObject()
+                        .put("encrypted_dns_mode", c.encryptedDnsMode.name.lowercase())
+                        .put("cosmetic_element_hiding", c.hiding)
+                        .put("cosmetic_scriptlets", c.scriptlets)
+                        .put("proxy_dns_over_tcp", c.proxyDnsOverTcp)
+                    // Resolving a custom DoT/DoH hostname is off-tunnel network I/O —
+                    // keep it off this collector's dispatcher via IO.
+                    withContext(Dispatchers.IO) { putDnsConfig(json, c.dns) }
+                    NativeCore.nativeUpdateConfig(handle, json.toString())
                 }
         }
 
@@ -544,11 +546,13 @@ class AdwardenVpnService : VpnService() {
             val proxyKind: ProxyKind,
             val proxy: ProxyEndpoint?,
             val proxyDnsOverTcp: Boolean,
-            val dnsServer: String,
-            val dnsPort: Int,
+            val dnsJson: JSONObject,
         )
         val cfg = runBlocking {
             val s = settings.settings.first()
+            // Resolving a custom DoT/DoH hostname is off-tunnel network I/O — do it on
+            // IO (this runBlocking is on the main thread at service start).
+            val dnsJson = withContext(Dispatchers.IO) { JSONObject().also { putDnsConfig(it, dnsCfgOf(s)) } }
             Cfg(
                 s.encryptedDnsMode,
                 if (s.interceptTls) ca.ensureCa() else null,
@@ -558,8 +562,7 @@ class AdwardenVpnService : VpnService() {
                 s.proxyKind,
                 s.activeProxy(),
                 s.proxyDnsOverTcp,
-                s.dnsServer,
-                s.dnsPort,
+                dnsJson,
             )
         }
         if (cfg.requested && cfg.material == null) {
@@ -568,8 +571,8 @@ class AdwardenVpnService : VpnService() {
         return JSONObject().apply {
             put("mtu", MTU)
             put("encrypted_dns_mode", cfg.encryptedDnsMode.name.lowercase())
-            put("dns_servers", upstreamDnsJson(cfg.dnsServer))
-            put("dns_port", dnsPort(cfg.dnsPort))
+            // Merge the resolved DNS fields (transport, servers, port, host, path).
+            cfg.dnsJson.keys().forEach { key -> put(key, cfg.dnsJson.get(key)) }
             put("cosmetic_element_hiding", cfg.hiding)
             put("cosmetic_scriptlets", cfg.scriptlets)
             put("proxy_dns_over_tcp", cfg.proxyDnsOverTcp)
@@ -662,8 +665,17 @@ class AdwardenVpnService : VpnService() {
         val hiding: Boolean,
         val scriptlets: Boolean,
         val proxyDnsOverTcp: Boolean,
-        val dnsServer: String,
-        val dnsPort: Int,
+        val dns: DnsCfg,
+    )
+
+    /** The user's custom-DNS settings (P6), snapshotted for config building. */
+    private data class DnsCfg(
+        val transport: DnsTransport,
+        val server: String,
+        val port: Int,
+        val dotHost: String,
+        val dotPort: Int,
+        val dohUrl: String,
     )
 
     companion object {
@@ -694,9 +706,73 @@ class AdwardenVpnService : VpnService() {
         // the user hasn't set a custom one (IPv4, matching the IPv4-only tunnel).
         private val UPSTREAM_DNS = listOf("1.1.1.1")
 
-        /** The `dns_servers` config array: the user's custom resolver when set,
-         *  else the built-in default. The native side validates and falls back on
-         *  anything unparseable, so a blank/invalid entry can't break resolution. */
+        // Bootstrap IPs for the built-in DoT/DoH presets, keyed by resolver hostname
+        // (the same hostnames the settings UI prefills). Baked so presets need no
+        // name lookup; custom hostnames are resolved off-tunnel instead.
+        private val DNS_PRESET_IPS = mapOf(
+            "cloudflare-dns.com" to "1.1.1.1",
+            "dns.google" to "8.8.8.8",
+            "dns.quad9.net" to "9.9.9.9",
+            "dns.adguard-dns.com" to "94.140.14.14",
+        )
+
+        private fun dnsCfgOf(s: AppSettings) = DnsCfg(
+            s.dnsTransport, s.dnsServer, s.dnsPort, s.dnsDotHost, s.dnsDotPort, s.dnsDohUrl,
+        )
+
+        /** Populate `json` with the native DNS config fields (`dns_transport`,
+         *  `dns_servers`, `dns_port`, and for DoT/DoH `dns_host`/`dns_path`). For
+         *  DoT/DoH the resolver hostname is resolved to a bootstrap dial IP here
+         *  (off-tunnel); if that fails, `dns_host` is omitted so the core fails DNS
+         *  closed rather than dialing the wrong resolver. Call off the main thread —
+         *  a custom hostname triggers a blocking lookup. */
+        private fun putDnsConfig(json: JSONObject, cfg: DnsCfg) {
+            json.put("dns_transport", cfg.transport.name.lowercase())
+            when (cfg.transport) {
+                DnsTransport.PLAIN -> {
+                    json.put("dns_servers", upstreamDnsJson(cfg.server))
+                    json.put("dns_port", dnsPort(cfg.port))
+                }
+                DnsTransport.DOT -> {
+                    val host = cfg.dotHost.trim()
+                    val ip = bootstrapIp(host)
+                    if (ip != null) {
+                        json.put("dns_servers", JSONArray(listOf(ip)))
+                        json.put("dns_host", host)
+                    } else {
+                        Log.w(TAG, "DoT host '$host' unresolved; DNS will fail closed")
+                        json.put("dns_servers", JSONArray())
+                    }
+                    json.put("dns_port", if (cfg.dotPort in 1..65535) cfg.dotPort else 853)
+                }
+                DnsTransport.DOH -> {
+                    val uri = Uri.parse(cfg.dohUrl.trim())
+                    val host = uri.host.orEmpty()
+                    val ip = bootstrapIp(host)
+                    if (ip != null) {
+                        json.put("dns_servers", JSONArray(listOf(ip)))
+                        json.put("dns_host", host)
+                        json.put("dns_path", uri.path?.ifEmpty { null } ?: "/dns-query")
+                    } else {
+                        Log.w(TAG, "DoH host '$host' unresolved; DNS will fail closed")
+                        json.put("dns_servers", JSONArray())
+                    }
+                    json.put("dns_port", if (uri.port in 1..65535) uri.port else 443)
+                }
+            }
+        }
+
+        /** A dial IP for a DoT/DoH resolver hostname: a baked preset IP if known,
+         *  else an off-tunnel system-resolver lookup (null on failure/blank). */
+        private fun bootstrapIp(host: String): String? {
+            if (host.isEmpty()) return null
+            DNS_PRESET_IPS[host]?.let { return it }
+            return runCatching { InetAddress.getByName(host).hostAddress }.getOrNull()
+        }
+
+        /** The `dns_servers` config array for plain DNS: the user's custom IP when
+         *  set, else the built-in default. The native side validates and falls back
+         *  on anything unparseable, so a blank/invalid entry can't break resolution. */
         private fun upstreamDnsJson(server: String): JSONArray {
             val s = server.trim()
             return if (s.isEmpty()) JSONArray(UPSTREAM_DNS) else JSONArray(listOf(s))

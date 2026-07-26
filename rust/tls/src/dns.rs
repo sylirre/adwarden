@@ -433,7 +433,7 @@ fn json_nxdomain(name: &str) -> String {
 }
 
 /// Build an upstream HTTP/1.1 `POST /dns-query` carrying a wire query.
-fn post_wire(authority: &str, path: &str, wire: &[u8]) -> Vec<u8> {
+pub(crate) fn post_wire(authority: &str, path: &str, wire: &[u8]) -> Vec<u8> {
     let path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
     let path = if path.is_empty() { "/dns-query" } else { path };
     let mut req = format!(

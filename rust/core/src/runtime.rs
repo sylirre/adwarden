@@ -22,7 +22,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use std::collections::HashMap;
 
 use crate::bridge::Bridge;
-use crate::config::{Config, EncryptedDnsMode};
+use crate::config::{Config, DnsTransport, EncryptedDnsMode};
 use crate::event::Batcher;
 use crate::forward::{AppPolicy, Forwarder};
 
@@ -66,9 +66,16 @@ pub enum Command {
     /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5), or resolve it
     /// directly. No effect without an HTTP/HTTPS proxy.
     SetProxyDns(bool),
-    /// Point the upstream resolver at a new address/port live (P6). `override_ip`
-    /// is `None` for the built-in default; `port` of 0 is treated as 53.
-    SetDnsUpstream { override_ip: Option<IpAddr>, port: u16 },
+    /// Point the upstream resolver at a new address/port/transport live (P6).
+    /// `override_ip` is the dial IP (`None` ⇒ built-in default); `port` of 0 ⇒ 53.
+    /// For DoT/DoH, `host` is the SNI/cert name and `path` the DoH request path.
+    SetDnsUpstream {
+        transport: DnsTransport,
+        override_ip: Option<IpAddr>,
+        port: u16,
+        host: Option<String>,
+        path: Option<String>,
+    },
 }
 
 pub struct Session {
@@ -259,8 +266,8 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
                 forwarder.set_cosmetic(element_hiding, scriptlets)
             }
             Command::SetProxyDns(on) => forwarder.set_proxy_dns_over_tcp(on),
-            Command::SetDnsUpstream { override_ip, port } => {
-                forwarder.set_dns_upstream(override_ip, port)
+            Command::SetDnsUpstream { transport, override_ip, port, host, path } => {
+                forwarder.set_dns_upstream(transport, override_ip, port, host, path)
             }
         }
     }

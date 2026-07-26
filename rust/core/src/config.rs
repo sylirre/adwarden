@@ -30,6 +30,19 @@ pub enum EncryptedDnsMode {
     Filter,
 }
 
+/// Transport the datapath uses to reach the *upstream* resolver for allowed DNS
+/// (P6). `Plain` is cleartext Do53 (UDP/TCP); `Dot` is DNS-over-TLS (RFC 7858);
+/// `Doh` is DNS-over-HTTPS (RFC 8484). Orthogonal to [`EncryptedDnsMode`], which
+/// governs how *apps'* encrypted DNS is treated. Absent/unknown ⇒ `Plain`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsTransport {
+    #[default]
+    Plain,
+    Dot,
+    Doh,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default = "default_mtu")]
@@ -41,9 +54,21 @@ pub struct Config {
     pub dns_servers: Vec<String>,
     /// Port to reach the upstream resolver on (P6). Default 53; a custom port lets
     /// users point at a self-hosted resolver (Pi-hole/AdGuard Home) on a
-    /// non-standard port. Live-updatable. `0` is treated as 53.
+    /// non-standard port. Live-updatable. `0` is treated as 53. For DoT/DoH this is
+    /// the TLS port (853 / 443) and `dns_servers[0]` is the bootstrap dial IP.
     #[serde(default = "default_dns_port")]
     pub dns_port: u16,
+    /// Upstream DNS transport (P6): plain (Do53), DoT, or DoH. Live-updatable.
+    #[serde(default)]
+    pub dns_transport: DnsTransport,
+    /// DoT/DoH server name — the SNI + certificate name (and HTTP `Host` for DoH).
+    /// Kotlin resolves it to `dns_servers[0]`; the core dials that IP and validates
+    /// the cert against this name. Ignored for `Plain`.
+    #[serde(default)]
+    pub dns_host: Option<String>,
+    /// DoH request path (e.g. `/dns-query`). Ignored for `Plain`/`Dot`.
+    #[serde(default)]
+    pub dns_path: Option<String>,
     /// Encrypted-DNS handling (DoT/DoH). Absent/unknown ⇒ `Off`.
     #[serde(default)]
     pub encrypted_dns_mode: EncryptedDnsMode,
@@ -92,6 +117,9 @@ impl Default for Config {
             mtu: default_mtu(),
             dns_servers: Vec::new(),
             dns_port: default_dns_port(),
+            dns_transport: DnsTransport::Plain,
+            dns_host: None,
+            dns_path: None,
             encrypted_dns_mode: EncryptedDnsMode::Off,
             intercept_tls: false,
             ca_cert_pem: None,

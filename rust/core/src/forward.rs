@@ -28,7 +28,7 @@ use adwarden_netstack::{reset_for_syn, udp, Decoded, FlowId, FlowKey, FlowTable,
 use adwarden_tls::{peek_sni, write_har, DnsKind, HttpTransaction, MitmConfigs, SniPeek, TlsMitm};
 
 use crate::bridge::Bridge;
-use crate::config::{Config, EncryptedDnsMode};
+use crate::config::{Config, DnsTransport, EncryptedDnsMode};
 use crate::event::{Batcher, Event};
 use crate::http_forward::HttpForward;
 use crate::proxy::{self, Handshake, Proxy, ProxyKind, Step as ProxyStep};
@@ -89,6 +89,9 @@ enum Route {
     /// A one-shot DNS-over-TCP query through an HTTP/HTTPS proxy (P5). Keyed in
     /// `dns_tcp` by the socket's own token, which is the readiness token here.
     DnsTcp,
+    /// A one-shot DoT/DoH upstream query (P6). Keyed in `dns_tls` by the socket's
+    /// own token, which is the readiness token here.
+    DnsTls,
 }
 
 /// Whether a flow's interception has been decided, or is waiting on the SNI.
@@ -132,13 +135,19 @@ struct ProxyTls {
 }
 
 impl ProxyTls {
-    /// Build a client session verifying the proxy against the bundled root store
-    /// (an HTTPS proxy with a publicly-trusted cert). `None` on config/name error.
-    fn new(stream: TcpStream, server_name: &str) -> Option<ProxyTls> {
-        let config = adwarden_tls::upstream_client_config().ok()?;
+    /// Build a client session verifying the peer against the bundled root store (a
+    /// publicly-trusted cert). `None` on config/name error. Used for both an HTTPS
+    /// proxy and a DoT/DoH upstream resolver.
+    fn new_client(stream: TcpStream, server_name: &str, alpn: &[&[u8]]) -> Option<ProxyTls> {
+        let config = adwarden_tls::upstream_client_config_alpn(alpn).ok()?;
         let name = rustls::pki_types::ServerName::try_from(server_name.to_string()).ok()?;
         let conn = rustls::ClientConnection::new(config, name).ok()?;
         Some(ProxyTls { stream, conn })
+    }
+
+    /// Build a client session for an HTTPS proxy (no ALPN).
+    fn new(stream: TcpStream, server_name: &str) -> Option<ProxyTls> {
+        ProxyTls::new_client(stream, server_name, &[])
     }
 
     /// Move TLS records between the socket and rustls: flush queued output, then
@@ -371,6 +380,48 @@ const DNS_TCP_MAX_JOBS: usize = 64;
 /// A DNS-over-TCP job that hasn't answered within this is reaped (fail-closed).
 const DNS_TCP_TIMEOUT_MS: i64 = 5_000;
 
+/// Which encrypted upstream transport a [`DnsTlsJob`] speaks over its TLS session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DnsTlsMode {
+    /// DNS-over-TLS (RFC 7858): 2-byte-length-prefixed wire message, like DoT/TCP.
+    Dot,
+    /// DNS-over-HTTPS (RFC 8484): an HTTP/1.1 `POST /dns-query` and its response.
+    Doh,
+}
+
+/// A one-shot DoT/DoH upstream query (P6): dial the resolver's IP, TLS-handshake
+/// validating its cert against `dns_host`, send the framed query (length-prefixed
+/// for DoT, an HTTP POST for DoH), read one response, inject it back to the app,
+/// done. Per-query — simple and leak-free, at the cost of a TLS handshake per
+/// lookup (connection pooling is a follow-up). Mirrors [`DnsTcpJob`].
+struct DnsTlsJob {
+    /// TLS transport to the resolver (always an [`UpstreamIo::Tls`]).
+    io: UpstreamIo,
+    /// True until the non-blocking TCP connect completes.
+    connecting: bool,
+    mode: DnsTlsMode,
+    /// The framed query, drained as it is written.
+    to_send: Vec<u8>,
+    query_sent: bool,
+    /// Accumulates the response until a full message is present.
+    resp_buf: Vec<u8>,
+    /// The app to answer, and the address the answer appears to come from (the
+    /// tunnel-local DNS placeholder the app targeted).
+    app: SocketAddr,
+    reply_src: SocketAddr,
+    /// For timeout reaping.
+    created_ms: i64,
+}
+
+/// Cap on concurrent in-flight DoT/DoH jobs (bounds sockets during a lookup burst).
+const DNS_TLS_MAX_JOBS: usize = 64;
+/// A DoT/DoH job that hasn't answered within this is reaped (fail-closed). Longer
+/// than DNS-over-TCP: a fresh TLS handshake precedes every query.
+const DNS_TLS_TIMEOUT_MS: i64 = 8_000;
+/// ALPN offered for DoH so the resolver speaks HTTP/1.1 back (matches the DoH
+/// re-origination path). DoT offers no ALPN.
+const DOH_ALPN: &[&[u8]] = &[b"http/1.1"];
+
 /// Allowed-flow telemetry coalesced over one flush window while the live log is
 /// closed and no app is engaged (P3-4). Drained into a single [`Event::coarse`]
 /// per flush instead of one [`Event::flow`] per packet.
@@ -419,6 +470,8 @@ pub struct Forwarder {
     /// In-flight DNS-over-TCP jobs, keyed by their socket token (P5): DNS routed
     /// through an HTTP/HTTPS proxy when `proxy_dns_over_tcp` is on.
     dns_tcp: HashMap<Token, DnsTcpJob>,
+    /// In-flight DoT/DoH upstream jobs (P6), keyed by their socket token.
+    dns_tls: HashMap<Token, DnsTlsJob>,
     routes: HashMap<Token, Route>,
     next_token: usize,
     outbox: Vec<Vec<u8>>,
@@ -434,8 +487,16 @@ pub struct Forwarder {
     /// family split would strand a configured IPv6 resolver). `None` ⇒ the
     /// built-in public default, matched to the query's family. Live-updatable.
     dns_override: Option<IpAddr>,
-    /// Port to reach the upstream resolver on (default 53). Live-updatable.
+    /// Port to reach the upstream resolver on (default 53; 853/443 for DoT/DoH).
+    /// Live-updatable.
     dns_port: u16,
+    /// Upstream DNS transport (P6): plain Do53, DoT, or DoH. Live-updatable.
+    dns_transport: DnsTransport,
+    /// DoT/DoH server name for SNI + cert validation (and the DoH `Host` header).
+    /// The dial IP is `dns_override`; this is who that IP must prove it is.
+    dns_host: Option<String>,
+    /// DoH request path (default `/dns-query`). Unused for plain/DoT.
+    dns_path: Option<String>,
     /// Upstream proxy (P5): when `Some`, TCP flows are dialed through it (HTTP/
     /// HTTPS CONNECT or SOCKS5) instead of the origin. `None` = direct (today's
     /// behavior). A start-time setting, fixed for the session.
@@ -502,6 +563,7 @@ impl Forwarder {
             udp: HashMap::new(),
             socks_udp: HashMap::new(),
             dns_tcp: HashMap::new(),
+            dns_tls: HashMap::new(),
             routes: HashMap::new(),
             next_token: FIRST_DYNAMIC_TOKEN,
             outbox: Vec::new(),
@@ -514,6 +576,9 @@ impl Forwarder {
             pcap: None,
             dns_override,
             dns_port,
+            dns_transport: config.dns_transport,
+            dns_host: normalize_dns_host(&config.dns_host),
+            dns_path: config.dns_path.clone(),
             proxy: proxy_active,
             proxy_broken,
             proxy_dns_over_tcp: config.proxy_dns_over_tcp,
@@ -591,12 +656,23 @@ impl Forwarder {
         self.encrypted_dns_mode = mode;
     }
 
-    /// Point the upstream resolver at a new address/port live (P6). Takes effect
-    /// on the next DNS query; existing UDP sessions to the old upstream drain via
-    /// the idle reaper. `port` of 0 is treated as 53.
-    pub fn set_dns_upstream(&mut self, override_ip: Option<IpAddr>, port: u16) {
+    /// Point the upstream resolver at a new address/port/transport live (P6). Takes
+    /// effect on the next DNS query; in-flight jobs and existing UDP sessions to the
+    /// old upstream drain via their reapers. `port` of 0 is treated as 53. For
+    /// DoT/DoH, `override_ip` is the bootstrap dial IP and `host` is the SNI/cert name.
+    pub fn set_dns_upstream(
+        &mut self,
+        transport: DnsTransport,
+        override_ip: Option<IpAddr>,
+        port: u16,
+        host: Option<String>,
+        path: Option<String>,
+    ) {
+        self.dns_transport = transport;
         self.dns_override = override_ip;
         self.dns_port = normalize_dns_port(port);
+        self.dns_host = normalize_dns_host(&host);
+        self.dns_path = path;
     }
 
     /// Replace the per-app firewall rules. Verdict cache is cleared so new rules
@@ -929,20 +1005,31 @@ impl Forwarder {
                     } else {
                         dgram.dst
                     };
-                    // A SOCKS5 proxy relays UDP via ASSOCIATE — except DNS falls
-                    // back to DNS-over-TCP (CONNECT resolver:53) when the switch is
-                    // on or we've learned this proxy refuses ASSOCIATE, so DNS still
-                    // resolves on the many SOCKS5 proxies that are TCP-only. For an
-                    // HTTP/HTTPS proxy, DNS goes over DNS-over-TCP when the switch is
-                    // on (else direct). Everything else goes direct.
-                    if proxy_udp == Some(true) {
-                        if is_dns && (self.proxy_dns_over_tcp || self.socks_udp_unsupported) {
-                            self.forward_dns_over_proxy(dgram, upstream, env, bridge);
-                        } else {
+                    // DNS routing (P6): the "route DNS through proxy" switch
+                    // (`proxy_dns_over_tcp`) is the single control. OFF ⇒ all DNS is
+                    // DIRECT to the resolver — plaintext Do53, or DoT/DoH per
+                    // `dns_transport` — even under a SOCKS5 proxy. ON ⇒ DNS rides the
+                    // proxy (plaintext): SOCKS5 via UDP ASSOCIATE (DNS-over-TCP
+                    // fallback if it refuses UDP), HTTP/HTTPS via DNS-over-TCP. Non-DNS
+                    // UDP is unaffected (SOCKS5 ASSOCIATE, else direct; HTTP/HTTPS
+                    // non-DNS was already dropped fail-closed above).
+                    let route_dns_through_proxy =
+                        is_dns && self.proxy.is_some() && self.proxy_dns_over_tcp;
+                    if route_dns_through_proxy {
+                        if proxy_udp == Some(true) && !self.socks_udp_unsupported {
                             self.forward_udp_socks(dgram, upstream, env, bridge);
+                        } else {
+                            self.forward_dns_over_proxy(dgram, upstream, env, bridge);
                         }
-                    } else if is_dns && self.proxy.is_some() && self.proxy_dns_over_tcp {
-                        self.forward_dns_over_proxy(dgram, upstream, env, bridge);
+                    } else if is_dns {
+                        match self.dns_transport {
+                            DnsTransport::Plain => self.forward_udp(dgram, upstream, env, bridge),
+                            DnsTransport::Dot | DnsTransport::Doh => {
+                                self.forward_dns_tls(dgram, upstream, env, bridge)
+                            }
+                        }
+                    } else if proxy_udp == Some(true) {
+                        self.forward_udp_socks(dgram, upstream, env, bridge);
                     } else {
                         self.forward_udp(dgram, upstream, env, bridge);
                     }
@@ -1092,6 +1179,7 @@ impl Forwarder {
         self.reap_udp(now);
         self.reap_socks(now);
         self.reap_dns_tcp(now);
+        self.reap_dns_tls(now);
         self.reap_proxy_handshakes(now, batcher);
         self.drain_stack_outbound();
     }
@@ -1175,6 +1263,7 @@ impl Forwarder {
                 }
             }
             Some(Route::DnsTcp) => self.drive_dns_tcp(token),
+            Some(Route::DnsTls) => self.drive_dns_tls(token),
             None => {}
         }
     }
@@ -2306,6 +2395,201 @@ impl Forwarder {
             self.teardown_dns_tcp(token);
         }
     }
+
+    // --- DoT / DoH upstream (P6) -----------------------------------------
+
+    /// Forward an allowed DNS query to a DoT/DoH resolver: dial the (Kotlin-resolved)
+    /// bootstrap IP `dial`, TLS-handshake validating the cert against `dns_host`,
+    /// then send the framed query. Per-query. Misconfig (no server name) drops the
+    /// query fail-closed — never a silent plaintext downgrade.
+    fn forward_dns_tls(
+        &mut self,
+        dgram: udp::UdpDatagram,
+        dial: SocketAddr,
+        env: &mut jni::JNIEnv,
+        bridge: &Bridge,
+    ) {
+        if self.dns_tls.len() >= DNS_TLS_MAX_JOBS || dgram.payload.len() > u16::MAX as usize {
+            return; // over the cap or an oversize query: drop (the app retries)
+        }
+        let mode = match self.dns_transport {
+            DnsTransport::Dot => DnsTlsMode::Dot,
+            DnsTransport::Doh => DnsTlsMode::Doh,
+            DnsTransport::Plain => return, // not an encrypted transport
+        };
+        // The SNI/cert name is required for TLS; without it we fail closed.
+        let Some(host) = self.dns_host.clone() else {
+            crate::alog!("DoT/DoH configured without a server name; dropping DNS query");
+            return;
+        };
+        let alpn: &[&[u8]] = if mode == DnsTlsMode::Doh { DOH_ALPN } else { &[] };
+        let Some((io, token)) = self.connect_dns_tls(dial, &host, alpn, env, bridge) else {
+            self.stats.connect_fail += 1;
+            return;
+        };
+        let to_send = match mode {
+            DnsTlsMode::Dot => {
+                // RFC 7858 framing: a 2-byte length prefix then the wire query.
+                let mut buf = Vec::with_capacity(dgram.payload.len() + 2);
+                buf.extend_from_slice(&(dgram.payload.len() as u16).to_be_bytes());
+                buf.extend_from_slice(&dgram.payload);
+                buf
+            }
+            DnsTlsMode::Doh => {
+                let path = self.dns_path.as_deref().unwrap_or("/dns-query");
+                adwarden_tls::doh_request(&host, path, &dgram.payload)
+            }
+        };
+        self.routes.insert(token, Route::DnsTls);
+        self.dns_tls.insert(
+            token,
+            DnsTlsJob {
+                io,
+                connecting: true,
+                mode,
+                to_send,
+                query_sent: false,
+                resp_buf: Vec::new(),
+                app: dgram.src,
+                reply_src: dgram.dst,
+                created_ms: self.now_ms(),
+            },
+        );
+    }
+
+    /// Dial `dial` directly (protect()'d, bypassing the tunnel) and wrap it in a
+    /// rustls client session validating the resolver's cert against `server_name`,
+    /// offering `alpn`. Registers the socket for readiness. Mirrors `connect_tcp`.
+    fn connect_dns_tls(
+        &mut self,
+        dial: SocketAddr,
+        server_name: &str,
+        alpn: &[&[u8]],
+        env: &mut jni::JNIEnv,
+        bridge: &Bridge,
+    ) -> Option<(UpstreamIo, Token)> {
+        let domain = if dial.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        let socket = Socket::new(domain, Type::STREAM, None).ok()?;
+        socket.set_nonblocking(true).ok()?;
+        if bridge.protect(env, socket.as_raw_fd()) {
+            self.stats.protect_ok += 1;
+        } else {
+            self.stats.protect_fail += 1;
+            crate::alog!("protect() failed for DoT/DoH socket -> {}", dial);
+            return None;
+        }
+        let _ = socket.connect(&dial.into());
+        let std_stream: std::net::TcpStream = socket.into();
+        let stream = TcpStream::from_std(std_stream);
+        let tls = ProxyTls::new_client(stream, server_name, alpn)?;
+        let mut io = UpstreamIo::Tls(Box::new(tls));
+        let token = self.alloc_token();
+        self.registry
+            .register(io.source(), token, Interest::READABLE | Interest::WRITABLE)
+            .ok()?;
+        Some((io, token))
+    }
+
+    /// Advance a DoT/DoH job on readiness: finish the TLS handshake, send the query,
+    /// and once a full response is buffered, inject it toward the app and tear down.
+    /// Any failure drops it (fail-closed). Mirrors `drive_dns_tcp`.
+    fn drive_dns_tls(&mut self, token: Token) {
+        // 1. Clear the connect flag on the first writable, checking for an error.
+        let connecting = self.dns_tls.get(&token).map_or(false, |j| j.connecting);
+        if connecting {
+            let err = self.dns_tls.get_mut(&token).and_then(|j| j.io.take_error().ok().flatten());
+            if let Some(j) = self.dns_tls.get_mut(&token) {
+                j.connecting = false;
+            }
+            if err.is_some() {
+                self.teardown_dns_tls(token);
+                return;
+            }
+        }
+        // 2. TLS handshake with the resolver.
+        if self.dns_tls.get(&token).map_or(false, |j| j.io.tls_handshaking()) {
+            let ok = self.dns_tls.get_mut(&token).map_or(false, |j| j.io.pump_tls().is_ok());
+            if !ok {
+                self.teardown_dns_tls(token);
+                return;
+            }
+            if self.dns_tls.get(&token).map_or(false, |j| j.io.tls_handshaking()) {
+                return; // still handshaking; wait for the next readiness event
+            }
+        }
+        // 3. Send the framed query once the handshake is done.
+        let mut send_failed = false;
+        if let Some(j) = self.dns_tls.get_mut(&token) {
+            if !j.io.tls_handshaking() && !j.query_sent {
+                if flush_io(&mut j.io, &mut j.to_send) {
+                    j.query_sent = j.to_send.is_empty();
+                } else {
+                    send_failed = true;
+                }
+            }
+        }
+        if send_failed {
+            self.teardown_dns_tls(token);
+            return;
+        }
+        // 4. Read the response; reply and finish once a full message is buffered.
+        let mut eof = false;
+        if let Some(j) = self.dns_tls.get_mut(&token) {
+            if j.query_sent {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match j.io.read(&mut buf) {
+                        Ok(0) => {
+                            eof = true;
+                            break;
+                        }
+                        Ok(n) => j.resp_buf.extend_from_slice(&buf[..n]),
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            eof = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let reply = self.dns_tls.get(&token).and_then(|j| {
+            let msg = match j.mode {
+                DnsTlsMode::Dot => take_dns_tcp_response(&j.resp_buf),
+                DnsTlsMode::Doh => take_doh_response(&j.resp_buf, eof),
+            };
+            msg.map(|m| (j.reply_src, j.app, m.to_vec()))
+        });
+        if let Some((reply_src, app, message)) = reply {
+            if let Some(packet) = udp::build_reply(reply_src, app, &message) {
+                self.outbox.push(packet);
+            }
+            self.stats.upstream_reply += 1;
+            self.teardown_dns_tls(token);
+        } else if eof {
+            // Upstream closed before a full response arrived: drop (fail-closed).
+            self.teardown_dns_tls(token);
+        }
+    }
+
+    fn teardown_dns_tls(&mut self, token: Token) {
+        if let Some(mut job) = self.dns_tls.remove(&token) {
+            let _ = self.registry.deregister(job.io.source());
+            self.routes.remove(&token);
+        }
+    }
+
+    fn reap_dns_tls(&mut self, now: i64) {
+        let stale: Vec<Token> = self
+            .dns_tls
+            .iter()
+            .filter(|(_, j)| now - j.created_ms > DNS_TLS_TIMEOUT_MS)
+            .map(|(k, _)| *k)
+            .collect();
+        for token in stale {
+            self.teardown_dns_tls(token);
+        }
+    }
 }
 
 /// Build the shared rustls configs for TLS interception, or `None` when it's
@@ -2602,6 +2886,47 @@ fn normalize_dns_port(port: u16) -> u16 {
     }
 }
 
+/// Trim a configured DoT/DoH server name; a blank value ⇒ `None`.
+fn normalize_dns_host(host: &Option<String>) -> Option<String> {
+    host.as_ref().map(|h| h.trim().to_string()).filter(|h| !h.is_empty())
+}
+
+/// Extract the DNS wire-format body from a DoH HTTP/1.1 response in `buf` (RFC 8484,
+/// `application/dns-message`). Handles `Content-Length` framing and, once `eof` is
+/// seen, connection-close framing. Returns `None` while the body is still
+/// incomplete; also `None` (⇒ the job is dropped, fail-closed) when the status is
+/// not `200` or the framing is chunked (unsupported).
+fn take_doh_response(buf: &[u8], eof: bool) -> Option<&[u8]> {
+    let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let head = std::str::from_utf8(&buf[..head_end]).ok()?;
+    // Status line, e.g. "HTTP/1.1 200 OK": the second token must be 200.
+    let status_ok = head
+        .split("\r\n")
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map_or(false, |code| code == "200");
+    if !status_ok {
+        return None;
+    }
+    let lower = head.to_ascii_lowercase();
+    if let Some(pos) = lower.find("content-length:") {
+        let value = lower[pos + "content-length:".len()..].split("\r\n").next()?;
+        let len: usize = value.trim().parse().ok()?;
+        let total = head_end.checked_add(len)?;
+        return if buf.len() >= total { Some(&buf[head_end..total]) } else { None };
+    }
+    if lower.contains("transfer-encoding:") && lower.contains("chunked") {
+        return None; // chunked framing unsupported → drop (fail-closed)
+    }
+    // No Content-Length: connection-close framing — the body is the rest of the
+    // stream, known complete only once the peer closes.
+    if eof {
+        Some(&buf[head_end..])
+    } else {
+        None
+    }
+}
+
 /// Resolve the upstream address for an allowed DNS `queried` at a placeholder:
 /// the configured `override_ip` (any family) when set, else the built-in public
 /// default matched to the query's family — always on `port`, never the port the
@@ -2684,6 +3009,35 @@ mod tests {
         assert_eq!(take_dns_tcp_response(&[0x00, 0x02, 0xAA, 0xBB, 0xCC]), Some(&[0xAA, 0xBB][..]));
         // Zero-length message.
         assert_eq!(take_dns_tcp_response(&[0x00, 0x00]), Some(&[][..]));
+    }
+
+    #[test]
+    fn take_doh_response_framing() {
+        // Complete 200 with Content-Length.
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: 3\r\n\r\n\xAB\xCD\xEF";
+        assert_eq!(take_doh_response(resp, false), Some(&[0xAB, 0xCD, 0xEF][..]));
+
+        // Headers complete but body short ⇒ wait for more (even at EOF it's None).
+        let short = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n\x01\x02";
+        assert!(take_doh_response(short, false).is_none());
+        assert!(take_doh_response(short, true).is_none());
+
+        // Headers not yet complete ⇒ None.
+        assert!(take_doh_response(b"HTTP/1.1 200 OK\r\nContent-Len", false).is_none());
+
+        // Non-200 status ⇒ drop (None) regardless of body.
+        let err = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 1\r\n\r\n\x00";
+        assert!(take_doh_response(err, false).is_none());
+
+        // Chunked framing is unsupported ⇒ drop (None).
+        let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n\xAB\xCD\xEF\r\n0\r\n\r\n";
+        assert!(take_doh_response(chunked, true).is_none());
+
+        // Connection-close framing (no Content-Length): body is the rest, complete
+        // only at EOF. Header matching is case-insensitive.
+        let closed = b"HTTP/1.1 200 OK\r\ncontent-type: application/dns-message\r\n\r\n\x11\x22";
+        assert!(take_doh_response(closed, false).is_none());
+        assert_eq!(take_doh_response(closed, true), Some(&[0x11, 0x22][..]));
     }
 
     #[test]
