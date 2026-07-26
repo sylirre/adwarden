@@ -57,6 +57,12 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val encryptedDnsMode: EncryptedDnsMode = EncryptedDnsMode.OFF,
     val interceptTls: Boolean = false,
+    /** Custom upstream resolver (P6). Blank ⇒ the built-in default (1.1.1.1). A
+     *  single IP literal (v4 or v6); the datapath forwards all allowed DNS here.
+     *  [dnsPort] lets users reach a self-hosted resolver on a non-standard port.
+     *  Applied live (no reconnect) via nativeUpdateConfig. */
+    val dnsServer: String = "",
+    val dnsPort: Int = 53,
     /** The user's intended protection state, persisted across process death so the
      *  Quick Settings tile and boot/always-on reasoning know what was asked (P3-5).
      *  This is intent, not the live running state (that's NativeSessionHolder). */
@@ -117,6 +123,8 @@ class SettingsRepository @Inject constructor(
                 ?.let { runCatching { EncryptedDnsMode.valueOf(it) }.getOrNull() }
                 ?: if (prefs[KEY_BLOCK_ENCRYPTED_DNS] == true) EncryptedDnsMode.BLOCK else EncryptedDnsMode.OFF,
             interceptTls = prefs[KEY_INTERCEPT_TLS] ?: false,
+            dnsServer = prefs[KEY_DNS_SERVER] ?: "",
+            dnsPort = prefs[KEY_DNS_PORT]?.takeIf { it in 1..65535 } ?: 53,
             desiredProtection = prefs[KEY_DESIRED_PROTECTION] ?: false,
             cosmeticElementHiding = prefs[KEY_COSMETIC_ELEMENT_HIDING] ?: false,
             cosmeticScriptlets = prefs[KEY_COSMETIC_SCRIPTLETS] ?: false,
@@ -142,6 +150,14 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setInterceptTls(value: Boolean) =
         store.edit { it[KEY_INTERCEPT_TLS] = value }
+
+    /** Persist the custom upstream resolver (P6) in one edit ⇒ one settings
+     *  emission ⇒ one live config push. A blank [server] clears the override
+     *  (back to the default resolver); [port] is expected pre-validated (1..65535). */
+    suspend fun setCustomDns(server: String, port: Int) = store.edit {
+        it[KEY_DNS_SERVER] = server.trim()
+        it[KEY_DNS_PORT] = port
+    }
 
     suspend fun setDesiredProtection(value: Boolean) =
         store.edit { it[KEY_DESIRED_PROTECTION] = value }
@@ -180,6 +196,8 @@ class SettingsRepository @Inject constructor(
         val KEY_BLOCK_ENCRYPTED_DNS = booleanPreferencesKey("block_encrypted_dns")
         val KEY_ENCRYPTED_DNS_MODE = stringPreferencesKey("encrypted_dns_mode")
         val KEY_INTERCEPT_TLS = booleanPreferencesKey("intercept_tls")
+        val KEY_DNS_SERVER = stringPreferencesKey("dns_server")
+        val KEY_DNS_PORT = intPreferencesKey("dns_port")
         val KEY_DESIRED_PROTECTION = booleanPreferencesKey("desired_protection")
         val KEY_COSMETIC_ELEMENT_HIDING = booleanPreferencesKey("cosmetic_element_hiding")
         val KEY_COSMETIC_SCRIPTLETS = booleanPreferencesKey("cosmetic_scriptlets")

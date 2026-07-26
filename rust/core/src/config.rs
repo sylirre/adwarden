@@ -12,6 +12,10 @@ fn default_mtu() -> usize {
     1500
 }
 
+fn default_dns_port() -> u16 {
+    53
+}
+
 /// How the datapath treats encrypted DNS (DoT/DoH). `Off` leaves it untouched;
 /// `Block` drops it so clients fall back to plaintext we can filter; `Filter`
 /// TLS-intercepts it and runs the inner queries through the blocklist engine,
@@ -30,10 +34,16 @@ pub enum EncryptedDnsMode {
 pub struct Config {
     #[serde(default = "default_mtu")]
     pub mtu: usize,
-    /// Upstream resolvers advertised on the TUN, used by the DNS sinkhole to
-    /// forward allowed queries (P1-B).
+    /// Upstream resolver(s) the DNS sinkhole forwards allowed queries to (P1-B).
+    /// A single IP literal (v4 or v6) is the norm; the first parseable entry wins.
+    /// Empty ⇒ the built-in public default (Cloudflare).
     #[serde(default)]
     pub dns_servers: Vec<String>,
+    /// Port to reach the upstream resolver on (P6). Default 53; a custom port lets
+    /// users point at a self-hosted resolver (Pi-hole/AdGuard Home) on a
+    /// non-standard port. Live-updatable. `0` is treated as 53.
+    #[serde(default = "default_dns_port")]
+    pub dns_port: u16,
     /// Encrypted-DNS handling (DoT/DoH). Absent/unknown ⇒ `Off`.
     #[serde(default)]
     pub encrypted_dns_mode: EncryptedDnsMode,
@@ -81,6 +91,7 @@ impl Default for Config {
         Config {
             mtu: default_mtu(),
             dns_servers: Vec::new(),
+            dns_port: default_dns_port(),
             encrypted_dns_mode: EncryptedDnsMode::Off,
             intercept_tls: false,
             ca_cert_pem: None,

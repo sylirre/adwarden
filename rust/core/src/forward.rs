@@ -429,8 +429,13 @@ pub struct Forwarder {
     transport: u8,
     verdicts: FlowTable<Verdict>,
     pcap: Option<PcapWriter<File>>,
-    dns_upstream_v4: IpAddr,
-    dns_upstream_v6: IpAddr,
+    /// The user-configured upstream resolver, used for all DNS regardless of the
+    /// query's address family (the TUN advertises only a v4 placeholder, so a
+    /// family split would strand a configured IPv6 resolver). `None` ⇒ the
+    /// built-in public default, matched to the query's family. Live-updatable.
+    dns_override: Option<IpAddr>,
+    /// Port to reach the upstream resolver on (default 53). Live-updatable.
+    dns_port: u16,
     /// Upstream proxy (P5): when `Some`, TCP flows are dialed through it (HTTP/
     /// HTTPS CONNECT or SOCKS5) instead of the origin. `None` = direct (today's
     /// behavior). A start-time setting, fixed for the session.
@@ -487,7 +492,8 @@ struct Verdict {
 
 impl Forwarder {
     pub fn new(config: &Config, registry: Registry) -> Self {
-        let (dns_v4, dns_v6) = parse_dns_upstreams(&config.dns_servers);
+        let dns_override = parse_dns_override(&config.dns_servers);
+        let dns_port = normalize_dns_port(config.dns_port);
         let (proxy_active, proxy_broken) = build_proxy(config);
         Forwarder {
             stack: NetStack::new(config.mtu),
@@ -506,8 +512,8 @@ impl Forwarder {
             transport: TRANSPORT_OTHER,
             verdicts: FlowTable::new(VERDICT_CACHE_CAP),
             pcap: None,
-            dns_upstream_v4: dns_v4,
-            dns_upstream_v6: dns_v6,
+            dns_override,
+            dns_port,
             proxy: proxy_active,
             proxy_broken,
             proxy_dns_over_tcp: config.proxy_dns_over_tcp,
@@ -583,6 +589,14 @@ impl Forwarder {
 
     pub fn set_encrypted_dns_mode(&mut self, mode: EncryptedDnsMode) {
         self.encrypted_dns_mode = mode;
+    }
+
+    /// Point the upstream resolver at a new address/port live (P6). Takes effect
+    /// on the next DNS query; existing UDP sessions to the old upstream drain via
+    /// the idle reaper. `port` of 0 is treated as 53.
+    pub fn set_dns_upstream(&mut self, override_ip: Option<IpAddr>, port: u16) {
+        self.dns_override = override_ip;
+        self.dns_port = normalize_dns_port(port);
     }
 
     /// Replace the per-app firewall rules. Verdict cache is cleared so new rules
@@ -1813,14 +1827,13 @@ impl Forwarder {
         }
     }
 
-    /// The real resolver to forward an allowed DNS query to, matching the
-    /// query's address family and keeping its port.
+    /// The real resolver to forward an allowed DNS query to: the configured
+    /// override when set (any family, since we forward to it regardless of the
+    /// placeholder the app queried), else the built-in public default matched to
+    /// the query's family. Always on the configured [`Self::dns_port`], not the
+    /// port the app used (that's the tunnel-local placeholder's :53).
     fn dns_upstream(&self, queried: SocketAddr) -> SocketAddr {
-        let ip = match queried.ip() {
-            IpAddr::V4(_) => self.dns_upstream_v4,
-            IpAddr::V6(_) => self.dns_upstream_v6,
-        };
-        SocketAddr::new(ip, queried.port())
+        resolve_dns_upstream(self.dns_override, self.dns_port, queried)
     }
 
     fn connect_udp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(UdpSocket, Token)> {
@@ -2573,27 +2586,32 @@ fn origin_authority(addr: SocketAddr) -> String {
     }
 }
 
-/// Pick the first IPv4 and IPv6 upstream resolvers from the config, falling back
-/// to Cloudflare when unspecified or unparseable.
-fn parse_dns_upstreams(servers: &[String]) -> (IpAddr, IpAddr) {
-    let mut v4 = IpAddr::V4(DEFAULT_DNS_V4);
-    let mut v6 = IpAddr::V6(DEFAULT_DNS_V6);
-    let mut got_v4 = false;
-    let mut got_v6 = false;
-    for server in servers {
-        match server.parse::<IpAddr>() {
-            Ok(ip @ IpAddr::V4(_)) if !got_v4 => {
-                v4 = ip;
-                got_v4 = true;
-            }
-            Ok(ip @ IpAddr::V6(_)) if !got_v6 => {
-                v6 = ip;
-                got_v6 = true;
-            }
-            _ => {}
-        }
+/// The user-configured upstream resolver: the first parseable IP literal (v4 or
+/// v6) in the config, or `None` (⇒ built-in public default) when unspecified or
+/// unparseable. Shared with the live-update path in `ffi::nativeUpdateConfig`.
+pub(crate) fn parse_dns_override(servers: &[String]) -> Option<IpAddr> {
+    servers.iter().find_map(|s| s.parse::<IpAddr>().ok())
+}
+
+/// Treat a zero/absent upstream DNS port as the standard 53.
+fn normalize_dns_port(port: u16) -> u16 {
+    if port == 0 {
+        53
+    } else {
+        port
     }
-    (v4, v6)
+}
+
+/// Resolve the upstream address for an allowed DNS `queried` at a placeholder:
+/// the configured `override_ip` (any family) when set, else the built-in public
+/// default matched to the query's family — always on `port`, never the port the
+/// app used (that's the tunnel-local placeholder's :53).
+fn resolve_dns_upstream(override_ip: Option<IpAddr>, port: u16, queried: SocketAddr) -> SocketAddr {
+    let ip = override_ip.unwrap_or_else(|| match queried.ip() {
+        IpAddr::V4(_) => IpAddr::V4(DEFAULT_DNS_V4),
+        IpAddr::V6(_) => IpAddr::V6(DEFAULT_DNS_V6),
+    });
+    SocketAddr::new(ip, port)
 }
 
 #[cfg(test)]
@@ -2604,15 +2622,53 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn parses_dns_upstreams_with_fallback() {
-        let (v4, v6) = parse_dns_upstreams(&["9.9.9.9".into(), "2620:fe::fe".into()]);
-        assert_eq!(v4, "9.9.9.9".parse::<IpAddr>().unwrap());
-        assert_eq!(v6, "2620:fe::fe".parse::<IpAddr>().unwrap());
+    fn parses_dns_override() {
+        // First parseable literal wins, regardless of family.
+        assert_eq!(
+            parse_dns_override(&["9.9.9.9".into()]),
+            Some("9.9.9.9".parse::<IpAddr>().unwrap()),
+        );
+        assert_eq!(
+            parse_dns_override(&["2620:fe::fe".into()]),
+            Some("2620:fe::fe".parse::<IpAddr>().unwrap()),
+        );
+        // Garbage is skipped; the first valid literal is taken.
+        assert_eq!(
+            parse_dns_override(&["not-an-ip".into(), "1.0.0.1".into()]),
+            Some("1.0.0.1".parse::<IpAddr>().unwrap()),
+        );
+        // Empty / all-unparseable ⇒ no override (built-in default is used).
+        assert_eq!(parse_dns_override(&[]), None);
+        assert_eq!(parse_dns_override(&["example.com".into()]), None);
+    }
 
-        // Empty config falls back to Cloudflare.
-        let (v4, v6) = parse_dns_upstreams(&[]);
-        assert_eq!(v4, IpAddr::V4(DEFAULT_DNS_V4));
-        assert_eq!(v6, IpAddr::V6(DEFAULT_DNS_V6));
+    #[test]
+    fn dns_upstream_applies_override_and_port() {
+        // The app always queries the tunnel-local v4 placeholder on :53.
+        let queried: SocketAddr = "10.215.173.1:53".parse().unwrap();
+        let v6q: SocketAddr = "[fd00:aced:1::1]:53".parse().unwrap();
+
+        // Configured override + custom port is used verbatim, regardless of the
+        // port the app used or the placeholder's family (a v6 resolver serves the
+        // v4-placeholder query).
+        let v4res: IpAddr = "9.9.9.9".parse().unwrap();
+        assert_eq!(resolve_dns_upstream(Some(v4res), 5335, queried), "9.9.9.9:5335".parse().unwrap());
+        let v6res: IpAddr = "2620:fe::fe".parse().unwrap();
+        assert_eq!(resolve_dns_upstream(Some(v6res), 53, queried), SocketAddr::new(v6res, 53));
+
+        // No override ⇒ built-in default matched to the query family, on the port.
+        assert_eq!(
+            resolve_dns_upstream(None, 53, queried),
+            SocketAddr::new(IpAddr::V4(DEFAULT_DNS_V4), 53),
+        );
+        assert_eq!(
+            resolve_dns_upstream(None, 53, v6q),
+            SocketAddr::new(IpAddr::V6(DEFAULT_DNS_V6), 53),
+        );
+
+        // Port 0 normalizes to 53 (as applied by new()/set_dns_upstream).
+        assert_eq!(normalize_dns_port(0), 53);
+        assert_eq!(normalize_dns_port(5335), 5335);
     }
 
     #[test]

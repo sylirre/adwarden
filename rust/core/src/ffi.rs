@@ -19,7 +19,7 @@ use adwarden_filter::{FilterEngine, ListFormat};
 
 use crate::bridge::Bridge;
 use crate::config::Config;
-use crate::forward::AppPolicy;
+use crate::forward::{parse_dns_override, AppPolicy};
 use crate::runtime::{Command, Session};
 
 /// Borrow the session behind a handle without taking ownership.
@@ -164,6 +164,10 @@ pub extern "system" fn Java_io_github_sylirre_adwarden_core_NativeCore_nativeUpd
                 scriptlets: parsed.cosmetic_scriptlets,
             });
             session.send(Command::SetProxyDns(parsed.proxy_dns_over_tcp));
+            session.send(Command::SetDnsUpstream {
+                override_ip: parse_dns_override(&parsed.dns_servers),
+                port: parsed.dns_port,
+            });
         }
     }));
 }

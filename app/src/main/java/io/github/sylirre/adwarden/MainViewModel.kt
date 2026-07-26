@@ -50,6 +50,13 @@ data class ProxyUiState(
     }
 }
 
+/** Snapshot of the custom upstream DNS setting for the settings form (P6). A blank
+ *  [server] means the built-in default resolver; [port] defaults to 53. */
+data class CustomDnsUiState(
+    val server: String = "",
+    val port: Int = 53,
+)
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val settings: SettingsRepository,
@@ -83,6 +90,10 @@ class MainViewModel @Inject constructor(
     val interceptTls: StateFlow<Boolean> = settings.settings
         .map { it.interceptTls }
         .stateIn(viewModelScope, SharingStarted.Eagerly, initial.interceptTls)
+
+    val customDns: StateFlow<CustomDnsUiState> = settings.settings
+        .map { CustomDnsUiState(it.dnsServer, it.dnsPort) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CustomDnsUiState(initial.dnsServer, initial.dnsPort))
 
     val cosmeticElementHiding: StateFlow<Boolean> = settings.settings
         .map { it.cosmeticElementHiding }
@@ -175,6 +186,12 @@ class MainViewModel @Inject constructor(
             settings.setInterceptTls(value)
             if (value) _caCertPem.value = ca.ensureCa()?.certPem
         }
+    }
+
+    /** Persist the custom upstream resolver (P6). Applied live by the VpnService
+     *  config observer — no reconnect. A blank [server] restores the default. */
+    fun setCustomDns(server: String, port: Int) {
+        viewModelScope.launch { settings.setCustomDns(server, port) }
     }
 
     fun setCosmeticElementHiding(value: Boolean) {

@@ -4,6 +4,7 @@
 package io.github.sylirre.adwarden.ui.screens
 
 import android.content.Intent
+import android.net.InetAddresses
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.sylirre.adwarden.BuildConfig
+import io.github.sylirre.adwarden.CustomDnsUiState
 import io.github.sylirre.adwarden.MainViewModel
 import io.github.sylirre.adwarden.ProxyUiState
 import io.github.sylirre.adwarden.R
@@ -71,6 +74,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val encryptedDnsMode by viewModel.encryptedDnsMode.collectAsStateWithLifecycle()
+    val customDns by viewModel.customDns.collectAsStateWithLifecycle()
     val interceptTls by viewModel.interceptTls.collectAsStateWithLifecycle()
     val cosmeticElementHiding by viewModel.cosmeticElementHiding.collectAsStateWithLifecycle()
     val cosmeticScriptlets by viewModel.cosmeticScriptlets.collectAsStateWithLifecycle()
@@ -111,6 +115,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
         AdwCard(Modifier.fillMaxWidth()) {
             Column {
                 EncryptedDnsPicker(selected = encryptedDnsMode, onSelect = viewModel::setEncryptedDnsMode)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                CustomDnsSection(dns = customDns, onApply = viewModel::setCustomDns)
                 InfoRow(
                     Icons.Rounded.Info,
                     stringResource(R.string.settings_limitation),
@@ -348,6 +354,75 @@ private fun EncryptedDnsPicker(selected: EncryptedDnsMode, onSelect: (EncryptedD
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * Custom upstream resolver form (P6): a single DNS server (IP literal) + a port,
+ * with an Apply button that persists both. A blank server clears the override
+ * back to the built-in default. The change is pushed live (no VPN reconnect).
+ */
+@Composable
+private fun CustomDnsSection(
+    dns: CustomDnsUiState,
+    onApply: (String, Int) -> Unit,
+) {
+    // Re-seed the fields whenever the saved value changes (e.g. after Apply).
+    var server by remember(dns) { mutableStateOf(dns.server) }
+    var port by remember(dns) { mutableStateOf(if (dns.port in 1..65535) dns.port.toString() else "53") }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(
+            stringResource(R.string.settings_dns_upstream),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            stringResource(R.string.settings_dns_upstream_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = server,
+                onValueChange = { server = it },
+                label = { Text(stringResource(R.string.settings_dns_server)) },
+                placeholder = { Text("1.1.1.1") },
+                singleLine = true,
+                modifier = Modifier.weight(2f),
+            )
+            OutlinedTextField(
+                value = port,
+                onValueChange = { new -> port = new.filter { it.isDigit() }.take(5) },
+                label = { Text(stringResource(R.string.settings_dns_port)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+        val trimmed = server.trim()
+        val portNum = port.toIntOrNull() ?: 0
+        // Blank server ⇒ the default resolver (valid). Otherwise require a numeric
+        // IP literal (v4/v6) — hostnames aren't accepted (a resolver's name can't be
+        // looked up without a resolver). Port must be in range.
+        val serverValid = trimmed.isEmpty() || InetAddresses.isNumericAddress(trimmed)
+        val valid = serverValid && portNum in 1..65535
+        val dirty = trimmed != dns.server || portNum != dns.port
+        Button(
+            onClick = { onApply(trimmed, portNum) },
+            enabled = valid && dirty,
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            Text(stringResource(R.string.settings_dns_apply))
+        }
     }
 }
 

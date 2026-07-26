@@ -129,6 +129,11 @@
     <string name="settings_encrypted_dns_off_sub">Encrypted DNS is left untouched and is not filtered.</string>
     <string name="settings_encrypted_dns_block_sub">Deny DoT/DoH so queries fall back to plaintext we can filter.</string>
     <string name="settings_encrypted_dns_filter_sub">Decrypt DoT/DoH and apply the blocklist to the queries inside. Needs the Adwarden CA installed; flows we can\'t decrypt (pinned apps, Private DNS strict, QUIC) are blocked instead.</string>
+    <string name="settings_dns_upstream">Upstream DNS server</string>
+    <string name="settings_dns_upstream_hint">Where allowed lookups are forwarded. Leave blank for the default (1.1.1.1). Enter an IP address (not a hostname) — an IPv4 address is safest unless your network has IPv6. Plaintext DNS only; a custom port lets you point at a self-hosted resolver.</string>
+    <string name="settings_dns_server">DNS server</string>
+    <string name="settings_dns_port">Port</string>
+    <string name="settings_dns_apply">Apply</string>
     <string name="settings_limitation">Limitation</string>
     <string name="settings_limitation_body">Filtering encrypted DNS requires the Adwarden CA. Android Private DNS in strict mode validates the system trust store and can\'t be decrypted, so it is blocked rather than filtered.</string>
     <string name="settings_https_inspection">HTTPS inspection</string>

@@ -120,6 +120,11 @@
     <string name="settings_encrypted_dns_off_sub">Зашифрованный DNS не трогаем и не фильтруем.</string>
     <string name="settings_encrypted_dns_block_sub">Запрещать DoT/DoH, чтобы запросы шли открытым текстом, который мы фильтруем.</string>
     <string name="settings_encrypted_dns_filter_sub">Расшифровывать DoT/DoH и применять список блокировки к запросам внутри. Нужен установленный ЦС Adwarden; потоки, которые не удаётся расшифровать (приложения с пиннингом, Private DNS strict, QUIC), блокируются.</string>
+    <string name="settings_dns_upstream">Вышестоящий DNS-сервер</string>
+    <string name="settings_dns_upstream_hint">Куда перенаправляются разрешённые запросы. Оставьте пустым для сервера по умолчанию (1.1.1.1). Укажите IP-адрес (не имя хоста) — адрес IPv4 надёжнее, если в сети нет IPv6. Только незашифрованный DNS; свой порт позволяет указать собственный резолвер.</string>
+    <string name="settings_dns_server">DNS-сервер</string>
+    <string name="settings_dns_port">Порт</string>
+    <string name="settings_dns_apply">Применить</string>
     <string name="settings_limitation">Ограничение</string>
     <string name="settings_limitation_body">Для фильтрации зашифрованного DNS нужен ЦС Adwarden. Private DNS в строгом режиме проверяет системные сертификаты и не расшифровывается, поэтому блокируется, а не фильтруется.</string>
     <string name="settings_https_inspection">Анализ HTTPS</string>

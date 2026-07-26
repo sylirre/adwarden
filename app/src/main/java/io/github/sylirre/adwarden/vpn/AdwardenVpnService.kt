@@ -358,7 +358,12 @@ class AdwardenVpnService : VpnService() {
         // to the core on change, coalesced into a single update.
         scope.launch {
             settings.settings
-                .map { LiveConfig(it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets, it.proxyDnsOverTcp) }
+                .map {
+                    LiveConfig(
+                        it.encryptedDnsMode, it.cosmeticElementHiding, it.cosmeticScriptlets,
+                        it.proxyDnsOverTcp, it.dnsServer, it.dnsPort,
+                    )
+                }
                 .distinctUntilChanged()
                 .collect { c ->
                     val handle = nativeHandle
@@ -370,6 +375,8 @@ class AdwardenVpnService : VpnService() {
                                 .put("cosmetic_element_hiding", c.hiding)
                                 .put("cosmetic_scriptlets", c.scriptlets)
                                 .put("proxy_dns_over_tcp", c.proxyDnsOverTcp)
+                                .put("dns_servers", upstreamDnsJson(c.dnsServer))
+                                .put("dns_port", dnsPort(c.dnsPort))
                                 .toString(),
                         )
                     }
@@ -537,6 +544,8 @@ class AdwardenVpnService : VpnService() {
             val proxyKind: ProxyKind,
             val proxy: ProxyEndpoint?,
             val proxyDnsOverTcp: Boolean,
+            val dnsServer: String,
+            val dnsPort: Int,
         )
         val cfg = runBlocking {
             val s = settings.settings.first()
@@ -549,6 +558,8 @@ class AdwardenVpnService : VpnService() {
                 s.proxyKind,
                 s.activeProxy(),
                 s.proxyDnsOverTcp,
+                s.dnsServer,
+                s.dnsPort,
             )
         }
         if (cfg.requested && cfg.material == null) {
@@ -557,7 +568,8 @@ class AdwardenVpnService : VpnService() {
         return JSONObject().apply {
             put("mtu", MTU)
             put("encrypted_dns_mode", cfg.encryptedDnsMode.name.lowercase())
-            put("dns_servers", JSONArray(UPSTREAM_DNS))
+            put("dns_servers", upstreamDnsJson(cfg.dnsServer))
+            put("dns_port", dnsPort(cfg.dnsPort))
             put("cosmetic_element_hiding", cfg.hiding)
             put("cosmetic_scriptlets", cfg.scriptlets)
             put("proxy_dns_over_tcp", cfg.proxyDnsOverTcp)
@@ -650,6 +662,8 @@ class AdwardenVpnService : VpnService() {
         val hiding: Boolean,
         val scriptlets: Boolean,
         val proxyDnsOverTcp: Boolean,
+        val dnsServer: String,
+        val dnsPort: Int,
     )
 
     companion object {
@@ -676,8 +690,19 @@ class AdwardenVpnService : VpnService() {
             "224.0.0.0/3",
         )
 
-        // Real upstream resolver the core forwards allowed DNS queries to
-        // (IPv4-only, matching the IPv4-only tunnel).
+        // Default upstream resolver the core forwards allowed DNS queries to when
+        // the user hasn't set a custom one (IPv4, matching the IPv4-only tunnel).
         private val UPSTREAM_DNS = listOf("1.1.1.1")
+
+        /** The `dns_servers` config array: the user's custom resolver when set,
+         *  else the built-in default. The native side validates and falls back on
+         *  anything unparseable, so a blank/invalid entry can't break resolution. */
+        private fun upstreamDnsJson(server: String): JSONArray {
+            val s = server.trim()
+            return if (s.isEmpty()) JSONArray(UPSTREAM_DNS) else JSONArray(listOf(s))
+        }
+
+        /** Clamp a stored DNS port into range; anything else means the standard 53. */
+        private fun dnsPort(port: Int): Int = if (port in 1..65535) port else 53
     }
 }

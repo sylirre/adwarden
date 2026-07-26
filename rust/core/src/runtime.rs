@@ -9,6 +9,7 @@
 //! resulting packets back to the TUN, and batches events to Kotlin.
 
 use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,6 +66,9 @@ pub enum Command {
     /// Route DNS through an HTTP/HTTPS proxy via DNS-over-TCP (P5), or resolve it
     /// directly. No effect without an HTTP/HTTPS proxy.
     SetProxyDns(bool),
+    /// Point the upstream resolver at a new address/port live (P6). `override_ip`
+    /// is `None` for the built-in default; `port` of 0 is treated as 53.
+    SetDnsUpstream { override_ip: Option<IpAddr>, port: u16 },
 }
 
 pub struct Session {
@@ -255,6 +259,9 @@ fn apply_commands(commands: &Arc<Mutex<VecDeque<Command>>>, forwarder: &mut Forw
                 forwarder.set_cosmetic(element_hiding, scriptlets)
             }
             Command::SetProxyDns(on) => forwarder.set_proxy_dns_over_tcp(on),
+            Command::SetDnsUpstream { override_ip, port } => {
+                forwarder.set_dns_upstream(override_ip, port)
+            }
         }
     }
 }
