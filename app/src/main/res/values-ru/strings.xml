@@ -131,6 +131,7 @@
     <string name="settings_dns_doh_url">URL резолвера</string>
     <string name="settings_dns_presets">Готовые</string>
     <string name="settings_dns_apply">Применить</string>
+    <string name="settings_dns_reset">Сбросить</string>
     <string name="settings_dns_coverage">На какие приложения влияет</string>
     <string name="settings_dns_coverage_body">Вышестоящий сервер и список блокировки применяются только к запросам, которые приложения отправляют Adwarden открытым текстом. Приложения со своим DoT/DoH обходят и то, и другое — выберите «Блок», чтобы заставить их перейти на открытый текст. «Фильтр» всё равно проверяет их DNS по списку блокировки, но разрешённые запросы идут к собственному резолверу приложения, а не на вышестоящий сервер.</string>
     <string name="settings_limitation">Ограничение</string>

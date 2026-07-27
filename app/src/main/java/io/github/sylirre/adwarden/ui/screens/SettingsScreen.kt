@@ -39,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -493,12 +494,27 @@ private fun CustomDnsSection(
                 edited.dohUrl.startsWith("https://") && edited.dohUrl.length > "https://".length
         }
         val dirty = edited != dns
-        Button(
-            onClick = { onApply(edited) },
-            enabled = valid && dirty,
-            modifier = Modifier.align(Alignment.End),
+        // The built-in default resolver (plain 1.1.1.1:53, all transport fields
+        // cleared); Reset persists it live, like Apply.
+        val default = CustomDnsUiState()
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(stringResource(R.string.settings_dns_apply))
+            TextButton(
+                onClick = { onApply(default) },
+                // Enabled while there's a non-default saved value or edit to clear.
+                enabled = dns != default || edited != default,
+            ) {
+                Text(stringResource(R.string.settings_dns_reset))
+            }
+            Button(
+                onClick = { onApply(edited) },
+                enabled = valid && dirty,
+            ) {
+                Text(stringResource(R.string.settings_dns_apply))
+            }
         }
     }
 }

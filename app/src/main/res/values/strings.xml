@@ -140,6 +140,7 @@
     <string name="settings_dns_doh_url">Resolver URL</string>
     <string name="settings_dns_presets">Presets</string>
     <string name="settings_dns_apply">Apply</string>
+    <string name="settings_dns_reset">Reset to default</string>
     <string name="settings_dns_coverage">Which apps this covers</string>
     <string name="settings_dns_coverage_body">The upstream server and blocklist only apply to the queries apps send Adwarden in plaintext. Apps that use their own DoT/DoH bypass both — set Encrypted DNS to Block to force them onto plaintext. Filter still blocklist-checks their DNS, but forwards allowed queries to the app\'s own resolver, not the upstream server.</string>
     <string name="settings_limitation">Limitation</string>
