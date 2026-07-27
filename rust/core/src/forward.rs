@@ -107,6 +107,11 @@ enum Classify {
 /// Cap on ClientHello bytes buffered while waiting to peek the SNI; past this we
 /// give up peeking and treat the flow as non-DoH.
 const SNI_PEEK_CAP: usize = 16 * 1024;
+/// A 443 flow that hasn't revealed its ClientHello SNI within this (Filter mode)
+/// is treated as abandoned and dropped, so deferred flows can't accumulate against
+/// the flow cap. A real client sends its ClientHello within an RTT; this is a
+/// generous backstop for the app-FIN teardown in `service`.
+const PENDING_SNI_TIMEOUT_MS: i64 = 30_000;
 
 /// Outcome of inspecting an allowed-so-far DNS datagram in [`Forwarder::handle_dns`].
 enum DnsOutcome {
@@ -1117,6 +1122,21 @@ impl Forwarder {
                 self.classify_pending(id, &data, batcher);
                 self.flush_to_upstream(id);
                 self.flush_to_app(id);
+                // If the app half-closed while the flow is still deferred, it will
+                // never yield a full ClientHello to classify on — drop it now.
+                // Otherwise it lingers in PendingSni forever (the pending branch
+                // has no half-close path and there's no TCP reaper), holding a flow
+                // slot + upstream fd. Chrome opens and abandons many speculative 443
+                // sockets, so under Filter these pile up until the flow cap (1024)
+                // makes smoltcp RST new connections (ERR_CONNECTION_RESET). The
+                // `outcome.closed` sweep reaps the aborted socket next pass.
+                let still_pending = matches!(
+                    self.tcp.get(&id).map(|up| &up.classify),
+                    Some(Classify::PendingSni(_))
+                );
+                if still_pending && self.stack.tcp_app_finished(id) {
+                    self.stack.tcp_abort(id);
+                }
                 continue;
             }
             let is_mitm = self.tcp.get(&id).map_or(false, |up| up.mitm.is_some());
@@ -1187,6 +1207,7 @@ impl Forwarder {
         self.reap_dns_tcp(now);
         self.reap_dns_tls(now);
         self.reap_proxy_handshakes(now, batcher);
+        self.reap_pending_sni(now);
         self.drain_stack_outbound();
     }
 
@@ -1886,6 +1907,26 @@ impl Forwarder {
         if let Some(mut up) = self.tcp.remove(&id) {
             let _ = self.registry.deregister(up.io.source());
             self.routes.remove(&up.token);
+        }
+    }
+
+    /// Abort 443 flows stuck awaiting their SNI past [`PENDING_SNI_TIMEOUT_MS`]
+    /// (Filter mode). Backstops the app-FIN teardown in `service` so a deferred
+    /// flow that neither completes its ClientHello nor half-closes can't hold a
+    /// slot/fd forever. The `outcome.closed` sweep reaps the aborted socket, so
+    /// this only needs to nudge smoltcp toward `Closed`.
+    fn reap_pending_sni(&mut self, now: i64) {
+        let stuck: Vec<FlowId> = self
+            .tcp
+            .iter()
+            .filter(|(_, up)| {
+                matches!(up.classify, Classify::PendingSni(_))
+                    && now - up.opened_ms > PENDING_SNI_TIMEOUT_MS
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stuck {
+            self.stack.tcp_abort(id);
         }
     }
 
