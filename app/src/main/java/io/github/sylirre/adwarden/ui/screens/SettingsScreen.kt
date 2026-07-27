@@ -121,6 +121,11 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 CustomDnsSection(dns = customDns, onApply = viewModel::setCustomDns)
                 InfoRow(
                     Icons.Rounded.Info,
+                    stringResource(R.string.settings_dns_coverage),
+                    stringResource(R.string.settings_dns_coverage_body),
+                )
+                InfoRow(
+                    Icons.Rounded.Info,
                     stringResource(R.string.settings_limitation),
                     stringResource(R.string.settings_limitation_body),
                 )

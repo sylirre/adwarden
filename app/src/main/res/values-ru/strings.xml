@@ -117,11 +117,11 @@
     <string name="settings_encrypted_dns_off">Выкл.</string>
     <string name="settings_encrypted_dns_block">Блок</string>
     <string name="settings_encrypted_dns_filter">Фильтр</string>
-    <string name="settings_encrypted_dns_off_sub">Зашифрованный DNS не трогаем и не фильтруем.</string>
-    <string name="settings_encrypted_dns_block_sub">Запрещать DoT/DoH, чтобы запросы шли открытым текстом, который мы фильтруем.</string>
-    <string name="settings_encrypted_dns_filter_sub">Расшифровывать DoT/DoH и применять список блокировки к запросам внутри. Нужен установленный ЦС Adwarden; потоки, которые не удаётся расшифровать (приложения с пиннингом, Private DNS strict, QUIC), блокируются.</string>
+    <string name="settings_encrypted_dns_off_sub">Собственный DoT/DoH приложений не трогаем — не фильтруем и не отправляем через вышестоящий сервер ниже.</string>
+    <string name="settings_encrypted_dns_block_sub">Запрещать DoT/DoH, чтобы запросы шли открытым текстом — фильтруются, затем отправляются на вышестоящий сервер ниже.</string>
+    <string name="settings_encrypted_dns_filter_sub">Расшифровывать DoT/DoH и применять список блокировки к запросам внутри; разрешённые всё равно идут к собственному резолверу приложения, а не на вышестоящий сервер ниже. Нужен установленный ЦС Adwarden; потоки, которые не удаётся расшифровать (приложения с пиннингом, Private DNS strict, QUIC), блокируются.</string>
     <string name="settings_dns_upstream">Вышестоящий DNS-сервер</string>
-    <string name="settings_dns_upstream_hint">Куда перенаправляются разрешённые запросы. Plain отправляет незашифрованные запросы на IP (пусто — сервер по умолчанию 1.1.1.1); DoT и DoH шифруют запросы к резолверу по имени — выберите готовый вариант или укажите свой. Неверно настроенный или недоступный шифрованный резолвер блокирует DNS, а не переходит на незашифрованный.</string>
+    <string name="settings_dns_upstream_hint">Куда Adwarden перенаправляет разрешённые незашифрованные запросы, которые ему отправляют приложения. Plain отправляет незашифрованные запросы на IP (пусто — сервер по умолчанию 1.1.1.1); DoT и DoH шифруют запросы к резолверу по имени — выберите готовый вариант или укажите свой. Неверно настроенный или недоступный шифрованный резолвер блокирует DNS, а не переходит на незашифрованный.</string>
     <string name="settings_dns_server">DNS-сервер</string>
     <string name="settings_dns_port">Порт</string>
     <string name="settings_dns_transport_plain">Plain</string>
@@ -131,6 +131,8 @@
     <string name="settings_dns_doh_url">URL резолвера</string>
     <string name="settings_dns_presets">Готовые</string>
     <string name="settings_dns_apply">Применить</string>
+    <string name="settings_dns_coverage">На какие приложения влияет</string>
+    <string name="settings_dns_coverage_body">Вышестоящий сервер и список блокировки применяются только к запросам, которые приложения отправляют Adwarden открытым текстом. Приложения со своим DoT/DoH обходят и то, и другое — выберите «Блок», чтобы заставить их перейти на открытый текст. «Фильтр» всё равно проверяет их DNS по списку блокировки, но разрешённые запросы идут к собственному резолверу приложения, а не на вышестоящий сервер.</string>
     <string name="settings_limitation">Ограничение</string>
     <string name="settings_limitation_body">Для фильтрации зашифрованного DNS нужен ЦС Adwarden. Private DNS в строгом режиме проверяет системные сертификаты и не расшифровывается, поэтому блокируется, а не фильтруется.</string>
     <string name="settings_https_inspection">Анализ HTTPS</string>
@@ -159,7 +161,7 @@
     <string name="settings_proxy_hint_https">Подключение к самому прокси по TLS — только для прокси, которые терминируют TLS (редкость), с публично доверенным сертификатом, соответствующим хосту. Большинство списков «HTTPS»-прокси на деле незашифрованы: для них выбирайте HTTP.</string>
     <string name="settings_proxy_hint_socks5">SOCKS5 с необязательным логином. Также передаёт DNS и другой UDP (например, QUIC); если прокси не поддерживает UDP, DNS автоматически переходит на TCP.</string>
     <string name="settings_proxy_dns">Направлять DNS через прокси</string>
-    <string name="settings_proxy_dns_sub">По умолчанию выключено. Когда выключено, DNS идёт напрямую к резолверу (в режиме, выбранном выше — plain, DoT или DoH), даже если прокси передаёт остальной трафик. Когда включено, DNS идёт через прокси: SOCKS5 передаёт его сам (переходя на TCP, если не поддерживает UDP), HTTP/HTTPS — по TCP (CONNECT к порту резолвера, что некоторые запрещают). Через прокси используется незашифрованный DNS, не DoT/DoH.</string>
+    <string name="settings_proxy_dns_sub">По умолчанию выключено. Когда выключено, DNS идёт напрямую к резолверу (в режиме, выбранном выше — plain, DoT или DoH), даже если прокси передаёт остальной трафик. Когда включено, DNS идёт через прокси: SOCKS5 передаёт его сам (переходя на TCP, если не поддерживает UDP), HTTP/HTTPS — по TCP (CONNECT к порту резолвера, что некоторые запрещают). Через прокси всегда идёт незашифрованный DNS — вышестоящий DoT/DoH отправляется открытым текстом на порт 53 и теряет шифрование на этом участке.</string>
     <string name="settings_proxy_note">Как работает перенаправление</string>
     <string name="settings_proxy_note_body">Разрешённые TCP-соединения направляются через прокси; если он недоступен, соединение блокируется, а не идёт в обход. Не-DNS UDP (например, QUIC) идёт через прокси SOCKS5 или отбрасывается для HTTP/HTTPS, чтобы приложения перешли на TCP. DNS зависит от переключателя выше, независимо от прокси. Изменение хоста, типа или порта переподключает VPN.</string>
     <string name="settings_system_integration">Интеграция с системой</string>

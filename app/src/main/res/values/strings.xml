@@ -126,11 +126,11 @@
     <string name="settings_encrypted_dns_off">Off</string>
     <string name="settings_encrypted_dns_block">Block</string>
     <string name="settings_encrypted_dns_filter">Filter</string>
-    <string name="settings_encrypted_dns_off_sub">Encrypted DNS is left untouched and is not filtered.</string>
-    <string name="settings_encrypted_dns_block_sub">Deny DoT/DoH so queries fall back to plaintext we can filter.</string>
-    <string name="settings_encrypted_dns_filter_sub">Decrypt DoT/DoH and apply the blocklist to the queries inside. Needs the Adwarden CA installed; flows we can\'t decrypt (pinned apps, Private DNS strict, QUIC) are blocked instead.</string>
+    <string name="settings_encrypted_dns_off_sub">Apps\' own DoT/DoH is left untouched — not filtered, and not routed through the upstream server below.</string>
+    <string name="settings_encrypted_dns_block_sub">Deny DoT/DoH so queries fall back to plaintext — filtered, then sent to the upstream server below.</string>
+    <string name="settings_encrypted_dns_filter_sub">Decrypt DoT/DoH and apply the blocklist to the queries inside; allowed ones still go to the app\'s own resolver, not the upstream server below. Needs the Adwarden CA installed; flows we can\'t decrypt (pinned apps, Private DNS strict, QUIC) are blocked instead.</string>
     <string name="settings_dns_upstream">Upstream DNS server</string>
-    <string name="settings_dns_upstream_hint">Where allowed lookups are forwarded. Plain sends cleartext to an IP (blank = the default 1.1.1.1); DoT and DoH encrypt lookups to a named resolver — pick a preset or enter your own. A misconfigured or unreachable encrypted resolver blocks DNS rather than falling back to cleartext.</string>
+    <string name="settings_dns_upstream_hint">Where Adwarden forwards the allowed plaintext queries apps send it. Plain sends cleartext to an IP (blank = the default 1.1.1.1); DoT and DoH encrypt lookups to a named resolver — pick a preset or enter your own. A misconfigured or unreachable encrypted resolver blocks DNS rather than falling back to cleartext.</string>
     <string name="settings_dns_server">DNS server</string>
     <string name="settings_dns_port">Port</string>
     <string name="settings_dns_transport_plain">Plain</string>
@@ -140,6 +140,8 @@
     <string name="settings_dns_doh_url">Resolver URL</string>
     <string name="settings_dns_presets">Presets</string>
     <string name="settings_dns_apply">Apply</string>
+    <string name="settings_dns_coverage">Which apps this covers</string>
+    <string name="settings_dns_coverage_body">The upstream server and blocklist only apply to the queries apps send Adwarden in plaintext. Apps that use their own DoT/DoH bypass both — set Encrypted DNS to Block to force them onto plaintext. Filter still blocklist-checks their DNS, but forwards allowed queries to the app\'s own resolver, not the upstream server.</string>
     <string name="settings_limitation">Limitation</string>
     <string name="settings_limitation_body">Filtering encrypted DNS requires the Adwarden CA. Android Private DNS in strict mode validates the system trust store and can\'t be decrypted, so it is blocked rather than filtered.</string>
     <string name="settings_https_inspection">HTTPS inspection</string>
@@ -168,7 +170,7 @@
     <string name="settings_proxy_hint_https">Connects to the proxy itself over TLS — only for proxies that terminate TLS (uncommon), with a publicly-trusted certificate matching the host. Most \"HTTPS\" proxy lists are actually plaintext: use HTTP for those.</string>
     <string name="settings_proxy_hint_socks5">SOCKS5 with optional login. Carries DNS and other UDP (e.g. QUIC) too; if the proxy doesn\'t support UDP, DNS falls back to TCP automatically.</string>
     <string name="settings_proxy_dns">Route DNS through the proxy</string>
-    <string name="settings_proxy_dns_sub">Off by default. When off, DNS goes directly to the resolver (using the transport above — plain, DoT or DoH), even while a proxy carries your other traffic. When on, DNS rides the proxy instead: a SOCKS5 proxy carries it (falling back to TCP if it refuses UDP), an HTTP/HTTPS proxy over TCP (CONNECT to the resolver\'s port, which some refuse). Routing through the proxy uses plain DNS, not DoT/DoH.</string>
+    <string name="settings_proxy_dns_sub">Off by default. When off, DNS goes directly to the resolver (using the transport above — plain, DoT or DoH), even while a proxy carries your other traffic. When on, DNS rides the proxy instead: a SOCKS5 proxy carries it (falling back to TCP if it refuses UDP), an HTTP/HTTPS proxy over TCP (CONNECT to the resolver\'s port, which some refuse). Routing through the proxy is always plain DNS — a DoT/DoH upstream is sent as plaintext to port 53 and loses its encryption on that leg.</string>
     <string name="settings_proxy_note">How forwarding works</string>
     <string name="settings_proxy_note_body">Allowed TCP connections are sent through the proxy; if it can\'t be reached, the connection is blocked rather than leaking around it. Non-DNS UDP (e.g. QUIC) goes through a SOCKS5 proxy, or is dropped for an HTTP/HTTPS proxy so apps fall back to TCP. DNS follows the switch above, independent of the proxy. Changing the host/type/port reconnects the VPN.</string>
     <string name="settings_system_integration">System integration</string>
