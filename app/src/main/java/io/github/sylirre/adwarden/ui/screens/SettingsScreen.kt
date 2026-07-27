@@ -497,6 +497,14 @@ private fun CustomDnsSection(
         // The built-in default resolver (plain 1.1.1.1:53, all transport fields
         // cleared); Reset persists it live, like Apply.
         val default = CustomDnsUiState()
+        // Whether the form currently shows the built-in default — nothing to reset.
+        // Judged by the active transport's *field* contents, not the tab itself: an
+        // empty DoT/DoH tab is still the default (selecting a tab isn't a config).
+        val formIsDefault = when (transport) {
+            DnsTransport.PLAIN -> server.isBlank() && (port.isBlank() || port.toIntOrNull() == 53)
+            DnsTransport.DOT -> dotHost.isBlank()
+            DnsTransport.DOH -> dohUrl.isBlank()
+        }
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
@@ -504,10 +512,9 @@ private fun CustomDnsSection(
         ) {
             TextButton(
                 onClick = {
-                    // Reset the form fields directly, not just via onApply's re-seed:
-                    // when the saved value is already the default, no new value is
-                    // emitted, so remember(dns) wouldn't re-run and an unapplied edit
-                    // (e.g. a switched transport) would linger, keeping Reset enabled.
+                    // Clear the form to the default directly — the onApply re-seed
+                    // doesn't fire when the saved value is already the default — then
+                    // persist it live. This also disables the button immediately.
                     transport = default.transport
                     server = default.server
                     port = default.port.toString()
@@ -516,14 +523,18 @@ private fun CustomDnsSection(
                     dohUrl = default.dohUrl
                     onApply(default)
                 },
-                // Enabled while there's a non-default saved value or edit to clear.
-                enabled = dns != default || edited != default,
+                enabled = !formIsDefault,
             ) {
                 Text(stringResource(R.string.settings_dns_reset))
             }
             Button(
                 onClick = { onApply(edited) },
-                enabled = valid && dirty,
+                // Also require a non-default form: an empty tab — including empty
+                // Plain, which *is* the default resolver — is a reset state, not
+                // something to Apply (use Reset to return to the default). Without
+                // this, switching from a configured DoT/DoH to empty Plain looks
+                // dirty (the transport changed) and valid, wrongly enabling Apply.
+                enabled = valid && dirty && !formIsDefault,
             ) {
                 Text(stringResource(R.string.settings_dns_apply))
             }
