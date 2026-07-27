@@ -503,7 +503,19 @@ private fun CustomDnsSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(
-                onClick = { onApply(default) },
+                onClick = {
+                    // Reset the form fields directly, not just via onApply's re-seed:
+                    // when the saved value is already the default, no new value is
+                    // emitted, so remember(dns) wouldn't re-run and an unapplied edit
+                    // (e.g. a switched transport) would linger, keeping Reset enabled.
+                    transport = default.transport
+                    server = default.server
+                    port = default.port.toString()
+                    dotHost = default.dotHost
+                    dotPort = default.dotPort.toString()
+                    dohUrl = default.dohUrl
+                    onApply(default)
+                },
                 // Enabled while there's a non-default saved value or edit to clear.
                 enabled = dns != default || edited != default,
             ) {
