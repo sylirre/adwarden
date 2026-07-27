@@ -1016,10 +1016,16 @@ impl Forwarder {
                     let route_dns_through_proxy =
                         is_dns && self.proxy.is_some() && self.proxy_dns_over_tcp;
                     if route_dns_through_proxy {
+                        // The proxy carries only cleartext Do53 (tunnelling DoT/DoH
+                        // through it is a follow-up, as the toggle's description
+                        // states). So a DoT/DoH transport is downgraded to plaintext
+                        // on port 53 here — reusing its TLS port (853/443) would write
+                        // cleartext DNS to a TLS listener and break every lookup.
+                        let resolver = self.dns_upstream_plain(dgram.dst);
                         if proxy_udp == Some(true) && !self.socks_udp_unsupported {
-                            self.forward_udp_socks(dgram, upstream, env, bridge);
+                            self.forward_udp_socks(dgram, resolver, env, bridge);
                         } else {
-                            self.forward_dns_over_proxy(dgram, upstream, env, bridge);
+                            self.forward_dns_over_proxy(dgram, resolver, env, bridge);
                         }
                     } else if is_dns {
                         match self.dns_transport {
@@ -1923,6 +1929,16 @@ impl Forwarder {
     /// port the app used (that's the tunnel-local placeholder's :53).
     fn dns_upstream(&self, queried: SocketAddr) -> SocketAddr {
         resolve_dns_upstream(self.dns_override, self.dns_port, queried)
+    }
+
+    /// The resolver address for the cleartext DNS-through-proxy path (P5/P6). The
+    /// proxy carries plain Do53 only (tunnelling DoT/DoH through it is a follow-up),
+    /// so a DoT/DoH transport is downgraded to port 53 here rather than reusing its
+    /// TLS port — the configured resolver IP answers Do53 there for the presets and
+    /// the major providers. `Plain` keeps its (possibly custom) port unchanged.
+    fn dns_upstream_plain(&self, queried: SocketAddr) -> SocketAddr {
+        let port = proxy_dns_port(self.dns_transport, self.dns_port);
+        resolve_dns_upstream(self.dns_override, port, queried)
     }
 
     fn connect_udp(&mut self, server: SocketAddr, env: &mut jni::JNIEnv, bridge: &Bridge) -> Option<(UdpSocket, Token)> {
@@ -2939,6 +2955,18 @@ fn resolve_dns_upstream(override_ip: Option<IpAddr>, port: u16, queried: SocketA
     SocketAddr::new(ip, port)
 }
 
+/// The port for the cleartext DNS-through-proxy path (P5/P6): a DoT/DoH transport
+/// is downgraded to Do53 (53) since the proxy carries only plaintext DNS, while
+/// `Plain` keeps its configured (possibly custom) port. Reusing a DoT/DoH TLS port
+/// (853/443) here would send cleartext DNS to a TLS listener and break resolution.
+/// See [`Forwarder::dns_upstream_plain`].
+fn proxy_dns_port(transport: DnsTransport, dns_port: u16) -> u16 {
+    match transport {
+        DnsTransport::Plain => dns_port,
+        DnsTransport::Dot | DnsTransport::Doh => 53,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2994,6 +3022,18 @@ mod tests {
         // Port 0 normalizes to 53 (as applied by new()/set_dns_upstream).
         assert_eq!(normalize_dns_port(0), 53);
         assert_eq!(normalize_dns_port(5335), 5335);
+    }
+
+    #[test]
+    fn proxy_dns_downgrades_encrypted_to_plaintext_do53() {
+        // Plain keeps its (possibly custom) port — DNS-over-TCP/SOCKS through the
+        // proxy speaks cleartext Do53 to that resolver:port verbatim.
+        assert_eq!(proxy_dns_port(DnsTransport::Plain, 53), 53);
+        assert_eq!(proxy_dns_port(DnsTransport::Plain, 5335), 5335);
+        // DoT/DoH can't be spoken over the proxy in v1, so the TLS port (853/443) is
+        // downgraded to cleartext Do53 rather than writing plaintext to a TLS port.
+        assert_eq!(proxy_dns_port(DnsTransport::Dot, 853), 53);
+        assert_eq!(proxy_dns_port(DnsTransport::Doh, 443), 53);
     }
 
     #[test]
